@@ -3,15 +3,14 @@
 # author: Mathieu Bernard <mathieu.a.bernard@inria.fr>
 
 import argparse
-import collections
 import os
 import tempfile
+import traceback
 import zipfile
 from pathlib import Path
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import roc_auc_score, roc_curve, auc
-import scikitplot as skplt
+from collections import defaultdict
+from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curve
 
 """Evaluation script for the Intuitive Physics Challenge
 
@@ -36,52 +35,61 @@ directory structure is different.
 class MCSScore:
 
     @staticmethod
-    def roc_test():
-        y_true = np.array([0, 0, 1, 1])
-        y_scores = np.array([0.1, 0.4, 0.35, 0.8])
-
-        skplt.metrics.plot_roc_curve(y_true, y_scores)
-        # fpr, tpr, thresholds = roc_curve(y_true, y_scores)
-        # print("fpr {}".format(fpr))
-        # print("tpr {}".format(tpr))
-        # print("thresholds {}".format(thresholds))
-        #
-        # roc_auc = auc(fpr, tpr)
-        #
-        # plt.figure()
-        # lw = 2
-        # plt.plot(fpr, tpr, color='darkorange', lw=lw, label='ROC curve (area = %0.2f)' % roc_auc)
-        # plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
-        # plt.xlim([0.0, 1.0])
-        # plt.ylim([0.0, 1.05])
-        # plt.xlabel('False Positive Rate')
-        # plt.ylabel('True Positive Rate')
-        # plt.title('Receiver operating characteristic example')
-        # plt.legend(loc="lower right")
-        # plt.show()
-
-    @staticmethod
     def loss_scene_relative(sub_scene, ref_scene):
-        """Computes the relative error rate
+        """Computes the relative error rate for a single test, consisting of 4 scenes
         Equation 1 of https://arxiv.org/pdf/1803.07616.pdf
+        Passed in ref_scene like:   { '1':   1, '2':   0, '3':   1, '4':   0 }
+        and sub_scene like:         { '1': 0.8, '2': 0.1, '3': 0.6, '4': 0.55 }
+        This computes the sum of plausibility scores for all the possible scenes and compares
+        it to the sum of the plausibility scores for all the impossible scenes.  If the sum of
+        plausibility of the impossible is more than the sum of possible, then loss is 1; else 0
         """
-        pos, imp = 0, 0
-        score = 0
+        sum_of_possible, sum_of_impossible = 0, 0
+        loss = 0
         for k in ('1', '2', '3', '4'):
             if ref_scene[k] == 1:  # possible movie
-                pos += sub_scene[k]
+                sum_of_possible += sub_scene[k]
             else:  # impossible movie
-                imp += sub_scene[k]
+                sum_of_impossible += sub_scene[k]
 
-        if pos < imp:  # increment the relative error score
-            score += 1
+        if sum_of_possible < sum_of_impossible:
+            loss = 1
 
-        return score
+        return loss
+
+    def loss_relative(self, submitted, reference):
+        """Computes average relative loss over many scenes.
+        Data should look like:
+        {  "1" :   { '1': 0.8, '2': 0.1, '3': 0.6, '4': 0.55 },
+           "2" :   { '1': 0.8, '2': 0.1, '3': 0.6, '4': 0.55 },
+           etc.
+        }
+        where the key is the test consisting of 4 scenes.
+        It is assumed that there is a submitted for each reference
+        """
+        num_tests = len(submitted)
+
+        # Make sure that there are some tests, to avoid a divide by zero.
+        if num_tests == 0:
+            print("Possible problem:  No tests")
+            return 0
+
+        score = 0
+        for scene in reference.keys():
+            if scene not in submitted:
+                print("No test {} in submitted".format(scene))
+                score += 1
+            else:
+                score += self.loss_scene_relative(submitted[scene], reference[scene])
+
+        return float(score) / float(num_tests)
 
     @staticmethod
-    def loss_scene_absolute(submitted, reference):
+    def loss_absolute(submitted, reference):
         """Computes the absolute error rate
         Equation 2 of https://arxiv.org/pdf/1803.07616.pdf
+        Uses https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_auc_score.html
+        Note that this is not very interesting for a single test
         """
         y_true = np.asarray([
             y for k, v in sorted(reference.items())
@@ -93,53 +101,25 @@ class MCSScore:
 
         return 1.0 - roc_auc_score(y_true, y_score)
 
-    def _score_relative(self, submitted, reference):
-
-        N = len(submitted)
-        score = 0
-
-        for scene in reference.keys():
-            sub, ref = submitted[scene], reference[scene]
-            pos, imp = 0, 0
-            for k in ('1', '2', '3', '4'):
-                if ref[k] == 1:  # possible movie
-                    pos += sub[k]
-                else:  # impossible movie
-                    imp += sub[k]
-
-            if pos < imp:  # increment the relative error score
-                score += 1
-
-        # cast to float in case we are running python2
-        return float(score) / float(N)
-
-    def test_score(self):
-        sub_scene1 = {'1': 0.8, '2': 0.91, '3': 0.4, '4': 0.2}
-        ref_scene1 = {'1': 1., '2': 1., '3': 0., '4': 0.}
-        sub_scene = {"1": sub_scene1}
-        ref_scene = {"1": ref_scene1}
-        print("Result:  {}".format(self._score_absolute(sub_scene, ref_scene)))
-        print("Result:  {}".format(self._score_relative(sub_scene, ref_scene)))
-
     def score_per_block(self, submitted, reference):
-        sub_occluded = {k: v for k, v in submitted.items() if 'occluded' in k}
-        sub_visible = {k: v for k, v in submitted.items() if 'visible' in k}
-
-        ref_occluded = {k: v for k, v in reference.items() if 'occluded' in k}
-        ref_visible = {k: v for k, v in reference.items() if 'visible' in k}
+        # sub_occluded = {k: v for k, v in submitted.items() if 'occluded' in k}
+        # sub_visible = {k: v for k, v in submitted.items() if 'visible' in k}
+        #
+        # ref_occluded = {k: v for k, v in reference.items() if 'occluded' in k}
+        # ref_visible = {k: v for k, v in reference.items() if 'visible' in k}
 
         return {
-            'visible': {
-                'relative': self._score_relative(sub_visible, ref_visible),
-                'absolute': self._score_absolute(sub_visible, ref_visible),
-            },
-            'occluded': {
-                'relative': self._score_relative(sub_occluded, ref_occluded),
-                'absolute': self._score_absolute(sub_occluded, ref_occluded),
-            },
+            # 'visible': {
+            #     'relative': self.loss_relative(sub_visible, ref_visible),
+            #     'absolute': self.loss_absolute(sub_visible, ref_visible),
+            # },
+            # 'occluded': {
+            #     'relative': self.loss_relative(sub_occluded, ref_occluded),
+            #     'absolute': self.loss_absolute(sub_occluded, ref_occluded),
+            # },
             'all': {
-                'relative': self._score_relative(submitted, reference),
-                'absolute': self._score_absolute(submitted, reference),
+                'relative': self.loss_relative(submitted, reference),
+                'absolute': self.loss_absolute(submitted, reference),
             }}
 
     def score(self, submitted, reference):
@@ -177,7 +157,8 @@ class MCSScore:
             If the answers file is badly formatted
 
         """
-        answer = collections.defaultdict(dict)
+        answer = self.nested_dict(3, float)
+        # answer = collections.defaultdict(dict)
         with answer_file.open() as answer_file:
             for line in answer_file:
                 split_line = line.split()
@@ -186,15 +167,19 @@ class MCSScore:
                 plausibility = float(split_line[1])
                 assert 0 <= plausibility <= 1
 
-                header = split_line[0].split('/')
-                scene_id = '/'.join(header[:-1])
-                movie_id = header[-1]
-                assert movie_id in ('1', '2', '3', '4')
-
-                answer[scene_id][movie_id] = plausibility
+                # Line looks like:  O3/1076/2 1
+                first_part = split_line[0]
+                key = first_part.split('/')
+                block = str(key[0])
+                test = str(key[1])
+                scene = str(key[2])
+                # print("{} {} {} {}".format(block, test, scene, split_line[1]))
+                answer[block][test][scene] = plausibility
 
             for v in answer.values():
-                assert sorted(v.keys()) == ['1', '2', '3', '4']
+                for w in v.values():
+                    # print("Keys: {}".format(w.keys()))
+                    assert sorted(w.keys()) == ['1', '2', '3', '4']
 
         return answer
 
@@ -239,12 +224,20 @@ class MCSScore:
             return self.load_answer(answer_path)
         except Exception as e:
             print("Unable to read zip or parse answer.txt")
+            traceback.print_exc()
+
+    def nested_dict(self, n, type):
+        """ Create a multi dimensional dictionary of dimension n.
+        See: https://stackoverflow.com/questions/29348345/declaring-a-multi-dimensional-dictionary-in-python/39819609
+        """
+        if n == 1:
+            return defaultdict(type)
+        else:
+            return defaultdict(lambda: self.nested_dict(n - 1, type))
 
 
 def main_mcs():
     scorer = MCSScore()
-    scorer.roc_test()
-    return
 
     # load the submitted and reference data
     submitted_answer = scorer.get_answer_from_zip("submission_0.zip")
@@ -278,5 +271,4 @@ def intphys_main():
 
 
 if __name__ == '__main__':
-    # main_mcs()
     main_mcs()

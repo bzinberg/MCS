@@ -29,3 +29,14 @@ class TestMCSScore(TestCase):
         bad =  {'1': 0.9, '2': 0.1, '3': 0.3, '4': 0.8}
         loss = scorer.loss_scene_absolute(bad, ground_truth)
         print("Loss of bad is : {}".format(loss))
+
+
+    def test_score(self):
+        scorer = MCSScore()
+
+        sub_scene1 = {'1': 0.8, '2': 0.91, '3': 0.4, '4': 0.2}
+        ref_scene1 = {'1': 1., '2': 1., '3': 0., '4': 0.}
+        sub_scene = {"1": sub_scene1}
+        ref_scene = {"1": ref_scene1}
+        print("Result:  {}".format(scorer._score_absolute(sub_scene, ref_scene)))
+        print("Result:  {}".format(scorer._score_relative(sub_scene, ref_scene)))
