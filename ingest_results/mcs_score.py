@@ -240,7 +240,7 @@ def main_mcs():
     scorer = MCSScore()
 
     # load the submitted and reference data
-    submitted_answer = scorer.get_answer_from_zip("submission_0.zip")
+    submitted_answer = scorer.get_answer_from_zip("submission_ibm_linear.zip")
     reference = scorer.load_answer(Path("ground_truth.txt"))
     output_dir = "."
     scorer.create_html_file(submitted_answer, reference, output_dir)
@@ -252,22 +252,22 @@ def parse_arguments():
     parser.add_argument('input_dir', help='directory containing reference and submission data')
     parser.add_argument('output_dir', help='where the scores.txt file is written by the scoring program')
     return parser.parse_args()
-
-
-def intphys_main():
-    """Entry point of the IntPhys evaluation program"""
-    args = parse_arguments()
-
-    # load the submitted and reference data
-    input_dir = args.input_dir
-    submitted = load_answer(os.path.join(input_dir, 'res'))
-    reference = load_answer(os.path.join(input_dir, 'ref'))
-
-    output_dir = args.output_dir
-    if not os.path.isdir(output_dir):
-        raise ValueError('{} does not exist'.format(output_dir))
-
-    create_html_file(submitted, reference, output_dir)
+#
+#
+# def intphys_main():
+#     """Entry point of the IntPhys evaluation program"""
+#     args = parse_arguments()
+#
+#     # load the submitted and reference data
+#     input_dir = args.input_dir
+#     submitted = load_answer(os.path.join(input_dir, 'res'))
+#     reference = load_answer(os.path.join(input_dir, 'ref'))
+#
+#     output_dir = args.output_dir
+#     if not os.path.isdir(output_dir):
+#         raise ValueError('{} does not exist'.format(output_dir))
+#
+#     create_html_file(submitted, reference, output_dir)
 
 
 if __name__ == '__main__':
