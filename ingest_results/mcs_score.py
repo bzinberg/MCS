@@ -91,13 +91,16 @@ class MCSScore:
         Uses https://scikit-learn.org/stable/modules/generated/sklearn.metrics.roc_auc_score.html
         Note that this is not very interesting for a single test
         """
-        y_true = np.asarray([
-            y for k, v in sorted(reference.items())
-            for _, y in sorted(v.items())], dtype=np.float32)
+        y_true = np.array(reference)
+        y_score = np.array(submitted)
 
-        y_score = np.asarray([
-            y for k, v in sorted(submitted.items())
-            for _, y in sorted(v.items())], dtype=np.float32)
+        # y_true = np.asarray([
+        #     y for k, v in sorted(reference.items())
+        #     for _, y in sorted(v.items())], dtype=np.float32)
+        #
+        # y_score = np.asarray([
+        #     y for k, v in sorted(submitted.items())
+        #     for _, y in sorted(v.items())], dtype=np.float32)
 
         return 1.0 - roc_auc_score(y_true, y_score)
 
@@ -252,22 +255,6 @@ def parse_arguments():
     parser.add_argument('input_dir', help='directory containing reference and submission data')
     parser.add_argument('output_dir', help='where the scores.txt file is written by the scoring program')
     return parser.parse_args()
-#
-#
-# def intphys_main():
-#     """Entry point of the IntPhys evaluation program"""
-#     args = parse_arguments()
-#
-#     # load the submitted and reference data
-#     input_dir = args.input_dir
-#     submitted = load_answer(os.path.join(input_dir, 'res'))
-#     reference = load_answer(os.path.join(input_dir, 'ref'))
-#
-#     output_dir = args.output_dir
-#     if not os.path.isdir(output_dir):
-#         raise ValueError('{} does not exist'.format(output_dir))
-#
-#     create_html_file(submitted, reference, output_dir)
 
 
 if __name__ == '__main__':
