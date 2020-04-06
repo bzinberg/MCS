@@ -152,6 +152,14 @@ Haptic feedback. The material(s) of this object. Possible materials: "Metal", "W
 
 The list of 3D points (dicts with "x", "y", and "z") that form the outer shape of this object.
 
+### position : dict
+
+The "x", "y", and "z" coordinates for the global position of the center of this object's 3D model.
+
+### rotation : float
+
+This object's rotation angle in degrees.
+
 ### visible : boolean
 
 Whether you can see this object in your camera viewport.
@@ -190,9 +198,17 @@ The list of object mask images from the scene after the last action and physics 
 
 Your current pose. Either "LIE", "CRAWL", "SQUAT", or "STAND".
 
+### position : dict
+
+The "x", "y", and "z" coordinates for your global position.
+
 ### return_status : string
 
 The return status from your last action.
+
+### rotation : float
+
+Your current rotation angle in degrees.
 
 ### step_number : integer
 
@@ -368,10 +384,14 @@ Throw an object you are holding.
 
 - objectId : string, optional\
 The "uuid" of the held object. Defaults to the first held object.
-- (Not Yet Supported) rotation : float\
-Rotation degrees around the Y axis to throw the held object (left/right).
-- (Not Yet Supported) horizon : float\
-Rotation degrees around the X axis to throw the held object (up/down).
+- objectDirectionX : float, optional\
+The X of the directional vector pointing to where you would like to throw the object based on your current viewport.
+- objectDirectionY : float, optional\
+The Y of the directional vector pointing to where you would like to throw the object based on your current viewport.
+- objectDirectionZ : float, optional\
+The Z of the directional vector pointing to where you would like to throw the object based on your current viewport.
+(Note: if no direction is given, the object will be thrown forward (0, 0, 1))
+
 - force : float\
 The amount of force, from 0 to 1, used to throw the held object. Default: 0.5
 
