@@ -7,6 +7,7 @@
 - [Python Class: MCS_Step_Output](#mcs_step_output)
 - [Actions](#actions)
 - [Future Actions (Not Yet Supported)](#future-actions)
+- [Goal Descriptions](#goal-description)
 - [Goal Metadata](#goal-metadata)
 
 ## MCS
@@ -90,6 +91,10 @@ The MCS scene output data object from after the action and the physics simulatio
 
 The list of actions that are available for the scene at each step (outer list index).  Each inner list item is a list of action strings. For example, ['MoveAhead','RotateLook,rotation=180'] restricts the actions to either 'MoveAhead' or 'RotateLook' with the 'rotation' parameter set to 180. An action_list of None means that all actions are always available. An empty inner list means that all actions are available for that specific step.
 
+### description : string
+
+A human-readable sentence describing this goal and containing the target task(s) and object(s). Please see [Goal Descriptions](#Goal-Descriptions).
+
 ### info_list : list of strings
 
 The list of descriptors of objects and tasks associated with this goal (for the visualization interface).
@@ -128,13 +133,25 @@ The unique ID of this object, used with some actions.
 
 The "r", "g", and "b" pixel values of this object in images from the MCS_Step_Output's "object_mask_list".
 
+### dimensions : list of dicts
+
+The dimensions of this object in the environment's 3D global coordinate system as a list of 8 points (dicts with "x", "y", and "z").
+
 ### direction : dict
 
 The direction vector of the "x", "y", and "z" degrees between your position and this object's position (the difference in the two positions), normalized to 1. You can use the "x" and "y" as the "rotation" and "horizon" parameters (respectively) in a "RotateLook" action to face this object.
 
 ### distance : float
 
-The distance along the 2-dimensional X/Z grid from you to this object in number of steps ("Move" actions). If you want the distance to the object in the environment's global coordinate system (like the "position" property), multiply this number by 0.5.
+DEPRECATED. Same as distance_in_steps. Please use distance_in_steps or distance_in_world.
+
+### distance_in_steps : float
+
+The distance from you to this object in number of steps ("Move" actions) on the 2D X/Z movement grid.
+
+### distance_in_world : float
+
+The distance from you to this object in the environment's 3D global coordinate system.
 
 ### held : boolean
 
@@ -203,6 +220,10 @@ The "x", "y", and "z" coordinates for your global position.
 ### return_status : string
 
 The return status from your last action.
+
+### reward : int
+
+1 if you have accomplished this scene's goal; 0 otherwise.
 
 ### rotation : float
 
@@ -716,6 +737,55 @@ TODO
 
 TODO
 
+## Goal Descriptions
+
+Objects will be described with the following syntax: `size weight color(s) material(s) object`
+
+Sizes:
+
+- `tiny`: near the size of a baseball
+- `small`: near the size of a baby
+- `medium`: near the size of a child
+- `large`: near the size of an adult
+- `huge`: near the size of a sofa
+
+Weights:
+
+- `light`: can be held by a baby
+- `heavy`: cannot be held by a baby, but can be pushed or pulled
+- `massive`: cannot be moved by a baby
+
+Colors:
+
+- `black`
+- `blue`
+- `brown`
+- `green`
+- `grey`
+- `orange`
+- `purple`
+- `red`
+- `white`
+- `yellow`
+
+Materials:
+
+- `ceramic`
+- `food`
+- `glass`
+- `hollow`
+- `fabric`
+- `metal`
+- `organic`
+- `paper`
+- `plastic`
+- `rubber`
+- `soap`
+- `sponge`
+- `stone`
+- `wax`
+- `wood`
+
 ## Goal Metadata
 
 A goal's `metadata` property is a dict with a string `category` property and one or more other properties depending on the `category`.
@@ -725,6 +795,7 @@ Categories:
 - [`"INTPHYS"`](#intphys)
 - [`"RETRIEVAL"`](#retrieval)
 - [`"TRANSFERRAL"`](#transferral)
+- [`"TRAVERSAL"`](#traversal)
 
 ### IntPhys
 
@@ -738,25 +809,29 @@ The list of choices, one of which must be given in your call to `end_scene`.  Fo
 
 ### Retrieval
 
-In a scenario that has a retrieval goal, you must find and pickup a target object. This may involve exploring the scene, avoiding obstacles, interacting with objects (like closed containers), and tracking moving objects. These scenarios will demand a "common sense" understanding of self navigation (how to move and rotate yourself within a scene and around obstacles), object interaction (how objects work, including opening containers), and the basic physics of movement (kinematics, gravity, friction, etc.).
+In a scenario that has a retrieval goal, you must find and pickup a target object. This may involve exploring the scene, avoiding obstacles, interacting with objects (like closed containers), and (future evaluations) tracking moving objects. These scenarios will demand a "common sense" understanding of self navigation (how to move and rotate yourself within a scene and around obstacles), object interaction (how objects work, including opening containers), and (future evaluations) the basic physics of movement (kinematics, gravity, friction, etc.).
 
 A retrieval goal's `metadata` (with `category` of `"RETRIEVAL"`) will also have the following properties:
 
-#### target_id : string
+#### target.id : string
 
 The `objectId` of the target object to retrieve.
 
-#### target_image : list of lists of lists of integers
+#### target.image : list of lists of lists of integers
 
 An image of the target object to retrieve, given as a three-dimensional RGB pixel array.
 
-#### target_info : list of strings
+#### target.info : list of strings
 
 Human-readable information describing the target object needed for the visualization interface.
 
+#### target.match_image : string
+
+Whether the image of the target object (`target.image`) exactly matches the actual target object in the scene. If `false`, then the actual object will be different in one way (for example, the image may depict a blue ball, but the actual object is a yellow ball, or a blue cube).
+
 ### Transferral
 
-In a scenario that has a transferral goal, you must find and pickup the first target object and put it down either next to or on top of the second target object. This may involve exploring the scene, avoiding obstacles, interacting with objects (like closed receptacles), and tracking moving objects. These scenarios will demand a "common sense" understanding of self navigation (how to move and rotate yourself within a scene and around obstacles), object interaction (how objects work, including opening containers), and the basic physics of movement (kinematics, gravity, friction, etc.).
+In a scenario that has a transferral goal, you must find and pickup the first target object and put it down either next to or on top of the second target object. This may involve exploring the scene, avoiding obstacles, interacting with objects (like closed receptacles), and (future evaluations) tracking moving objects. These scenarios will demand a "common sense" understanding of self navigation (how to move and rotate yourself within a scene and around obstacles), object interaction (how objects work, including opening containers), and (future evaluations) the basic physics of movement (kinematics, gravity, friction, etc.).
 
 A transferral goal's `metadata` (with `category` of `"TRANSFERRAL"`) will also have the following properties:
 
@@ -764,26 +839,56 @@ A transferral goal's `metadata` (with `category` of `"TRANSFERRAL"`) will also h
 
 The required final position of the two target objects in relation to one another.  For transferral goals, this value will always be either `["target_1", "next_to", "target_2"]` or `["target_1", "on_top_of", "target_2"]`.
 
-#### target_1_id : string
+#### target_1.id : string
 
 The `objectId` of the first target object to pickup and transfer to the second target object.
 
-#### target_1_image : list of lists of lists of integers
+#### target_1.image : list of lists of lists of integers
 
 An image of the first target object to pickup and transfer to the second target object, given as a three-dimensional RGB pixel array.
 
-#### target_1_info : list of strings
+#### target_1.info : list of strings
 
 Human-readable information describing the target object needed for the visualization interface.
 
-#### target_2_id : string
+#### target_1.match_image : string
+
+Whether the image of the first target object (`target_1.image`) exactly matches the actual object in the scene. If `false`, then the actual first target object will be different in one way (for example, the image may depict a blue ball, but the actual object is a yellow ball, or a blue cube).
+
+#### target_2.id : string
 
 The `objectId` of the second target object to which the first target object must be transferred.
 
-#### target_2_image : list of lists of lists of integers
+#### target_2.image : list of lists of lists of integers
 
 An image of the second target object to which the first target object must be transferred, given as a three-dimensional RGB pixel array.
 
-#### target_2_info : list of strings
+#### target_2.info : list of strings
 
 Human-readable information describing the target object needed for the visualization interface.
+
+#### target_2.match_image : string
+
+Whether the image of the second target object (`target_2.image`) exactly matches the actual object in the scene. If `false`, then the actual second target object will be different in one way (for example, the image may depict a blue ball, but the actual object is a yellow ball, or a blue cube).
+
+### Traversal
+
+In a scenario that has a traversal goal, you must find and move next to a target object. This may involve exploring the scene, and avoiding obstacles. These scenarios will demand a "common sense" understanding of self navigation (how to move and rotate yourself within a scene and around obstacles).
+
+A retrieval goal's `metadata` (with `category` of `"TRAVERSAL"`) will also have the following properties:
+
+#### target.id : string
+
+The `objectId` of the target object to find and move next to.
+
+#### target.image : list of lists of lists of integers
+
+An image of the target object to find and move next to, given as a three-dimensional RGB pixel array.
+
+#### target.info : list of strings
+
+Human-readable information describing the target object needed for the visualization interface.
+
+#### target.match_image : string
+
+Whether the image of the target object (`target.image`) exactly matches the actual target object in the scene. If `false`, then the actual object will be different in one way (for example, the image may depict a blue ball, but the actual object is a yellow ball, or a blue cube).
