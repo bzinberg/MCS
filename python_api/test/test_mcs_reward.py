@@ -1,6 +1,10 @@
 import unittest
 import math
-import sympy
+import time
+import random
+
+from typing import Tuple
+from shapely import geometry
 
 from machine_common_sense.mcs_reward import MCS_Reward
 from machine_common_sense.mcs_goal import MCS_Goal
@@ -9,6 +13,14 @@ from machine_common_sense.mcs_util import MCS_Util
 
 
 class Test_MCS_Reward(unittest.TestCase):
+
+
+    def setUp(self):
+        self._start_at = time.time()
+
+    def tearDown(self):
+        elapsed = time.time() - self._start_at
+        print(f"{self.id()} ({round(elapsed,2)}s)")
 
     def test_default_reward(self):
         goal = MCS_Goal()
@@ -75,12 +87,12 @@ class Test_MCS_Reward(unittest.TestCase):
 
         lower, upper = MCS_Reward._convert_bounds_to_polygons(goal_object)
 
-        self.assertIsInstance(lower, sympy.Polygon)
-        self.assertIsInstance(upper, sympy.Polygon)
-        self.assertEqual(len(lower.vertices), 4)
-        self.assertEqual(len(upper.vertices), 4)
-        self.assertIsInstance(lower.vertices[0], sympy.Point2D)
-        self.assertIsInstance(upper.vertices[0], sympy.Point2D)
+        self.assertIsInstance(lower, geometry.Polygon)
+        self.assertIsInstance(upper, geometry.Polygon)
+        self.assertEqual(lower.length, 4)
+        self.assertEqual(upper.length, 4)
+        self.assertIsInstance(list(lower.exterior.coords)[0], Tuple)
+        self.assertIsInstance(list(upper.exterior.coords)[0], Tuple)
 
     def test_distance_to_object_within_polygon(self):
         goal_object = {'objectBounds': {'objectBoundsCorners': []}}
@@ -121,6 +133,30 @@ class Test_MCS_Reward(unittest.TestCase):
         self.assertTrue(dist)
         # distance to edge is 0.5 in both dimensions ~= 0.707
         self.assertAlmostEqual(dist, math.sqrt(0.5*0.5 + 0.5*0.5))
+
+    def test_distance_to_object_with_high_precision_corners(self):
+        goal_object = {'objectBounds': {'objectBoundsCorners': []}}
+
+        # could use pi or e or both
+        rn = random.random()
+
+        # create lower plane (y = 0)
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':0.0, 'y': 0.0, 'z': 0.0})
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':rn, 'y': 0.0, 'z': 0.0})
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':rn, 'y': 0.0, 'z': rn})
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':0.0, 'y': 0.0, 'z': rn})
+        # create upper plane (y = 1)
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':0.0, 'y': 1.0, 'z': 0.0})
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':rn, 'y': 1.0, 'z': 0.0})
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':rn, 'y': 1.0, 'z': rn})
+        goal_object['objectBounds']['objectBoundsCorners'].append({'x':0.0, 'y': 1.0, 'z': rn})
+        # goal object center position
+        goal_object['position'] = {'x': 0.0, 'z': 0.0}
+
+        dist = MCS_Reward._MCS_Reward__calc_distance_to_goal((1.5, 1.5), goal_object)
+        self.assertIsInstance(dist, float)
+        self.assertTrue(dist)
+        #self.assertAlmostEqual(dist, math.sqrt(1/3.0*1/3.0 + 1/3.0*1/3.0))
 
     def test_retrieval_reward(self):
         goal = MCS_Goal()
@@ -242,7 +278,7 @@ class Test_MCS_Reward(unittest.TestCase):
         goal = MCS_Goal()
         goal.metadata['target_1'] = {'id': '0'}
         goal.metadata['target_2'] = {'id': '1'}
-        goal.metadata['relationship'] = ['target_1', 'next_to', 'target_2']
+        goal.metadata['relationship'] = ['target_1', 'next to', 'target_2']
         obj_list = []
         for i in range(10):
             obj = {"objectId":str(i), "objectBounds": {"objectBoundsCorners": []}}
@@ -267,7 +303,7 @@ class Test_MCS_Reward(unittest.TestCase):
         goal = MCS_Goal()
         goal.metadata['target_1'] = {'id': '0'}
         goal.metadata['target_2'] = {'id': '1'}
-        goal.metadata['relationship'] = ['target_1', 'next_to', 'target_2']
+        goal.metadata['relationship'] = ['target_1', 'next to', 'target_2']
         obj_list = []
         for i in range(10):
             obj = {"objectId":str(i), "objectBounds": {"objectBoundsCorners": []}, "isPickedUp": True}
@@ -292,7 +328,7 @@ class Test_MCS_Reward(unittest.TestCase):
         goal = MCS_Goal()
         goal.metadata['target_1'] = {'id': '1'}
         goal.metadata['target_2'] = {'id': '0'}
-        goal.metadata['relationship'] = ['target_1', 'on_top_of', 'target_2']
+        goal.metadata['relationship'] = ['target_1', 'on top of', 'target_2']
         obj_list = []
         for i in range(10):
             obj = {"objectId":str(i), "objectBounds": {"objectBoundsCorners": []}}
@@ -317,7 +353,7 @@ class Test_MCS_Reward(unittest.TestCase):
         goal = MCS_Goal()
         goal.metadata['target_1'] = {'id': '0'}
         goal.metadata['target_2'] = {'id': '1'}        
-        goal.metadata['relationship'] = ['target_1', 'on_top_of', 'target_2']
+        goal.metadata['relationship'] = ['target_1', 'on top of', 'target_2']
         obj_list = []
         for i in range(10):
             obj = {"objectId":str(i), "objectBounds": {"objectBoundsCorners": []}, "isPickedUp": True}

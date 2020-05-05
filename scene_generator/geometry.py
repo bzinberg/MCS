@@ -3,7 +3,6 @@ import math
 import random
 
 from separating_axis_theorem import sat_entry
-from setuptools.sandbox import AbstractSandbox
 
 MAX_TRIES = 100
 # the following mins and maxes are inclusive
@@ -95,20 +94,30 @@ def rect_within_room(rect):
     return all(point_within_room(point) for point in rect)
 
 
-def calc_obj_pos(performer_position, other_rects, old_object):
+def calc_obj_pos(performer_position, other_rects, obj_def,
+                 x_func=random_position,
+                 z_func=random_position,
+                 rotation_func=random_rotation):
+
     """Returns new object with rotation & position if we can place the
 object in the frame, None otherwise."""
 
-    dx = old_object['dimensions']['x']/2.0
-    dz = old_object['dimensions']['z']/2.0
+    dx = obj_def['dimensions']['x'] / 2.0
+    dz = obj_def['dimensions']['z'] / 2.0
+    if 'offset' in obj_def:
+        offset_x = obj_def['offset']['x']
+        offset_z = obj_def['offset']['z']
+    else:
+        offset_x = 0.0
+        offset_z = 0.0
 
     tries = 0
     while tries < MAX_TRIES:
-        rotation = random_rotation()
-        new_x = random_position()
-        new_z = random_position()
+        rotation = rotation_func()
+        new_x = x_func()
+        new_z = z_func()
 
-        rect = calc_obj_coords(new_x, new_z, dx, dz, rotation)
+        rect = calc_obj_coords(new_x, new_z, dx, dz, offset_x, offset_z, rotation)
         if not collision(rect, performer_position) and \
                 rect_within_room(rect) and \
                 (len(other_rects) == 0 or not any(sat_entry(rect, other_rect) for other_rect in other_rects)):
@@ -118,13 +127,13 @@ object in the frame, None otherwise."""
     if tries < MAX_TRIES:
         new_object = {
             'rotation': {'x': 0, 'y': rotation, 'z': 0},
-            'position':  {'x': new_x, 'y': old_object['position_y'], 'z': new_z},
+            'position':  {'x': new_x, 'y': obj_def['position_y'], 'z': new_z},
             'bounding_box': rect
             }
         other_rects.append(rect)
         return new_object
 
-    logging.debug(f'could not place object: {old_object}')
+    logging.debug(f'could not place object: {obj_def}')
     return None
 
 
@@ -146,3 +155,12 @@ def can_contain(container, target):
         if can_enclose(space, target):
             return i
     return None
+
+
+def occluders_too_close(occluder, x_position, x_scale):
+    """Return True iff a new occluder at x_position with scale x_scale
+    would be too close to existing occluder occluder."""
+    existing_scale = occluder['shows'][0]['scale']['x']
+    min_distance = existing_scale / 2.0 + x_scale / 2.0 + 0.5
+    existing_x = occluder['shows'][0]['position']['x']
+    return abs(existing_x - x_position) < min_distance
