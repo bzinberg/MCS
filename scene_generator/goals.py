@@ -8,18 +8,16 @@ import random
 import uuid
 from abc import ABC, abstractmethod
 from enum import Enum, auto
+from typing import Any, Dict, Iterable, List, Optional, AnyStr, Tuple
 
 import geometry
 import materials
 import objects
-import objects_intphys_v1
+import ramps
 from geometry import random_position, random_rotation, calc_obj_pos, POSITION_DIGITS
-from objects import OBJECTS_PICKUPABLE, OBJECTS_MOVEABLE, OBJECTS_IMMOBILE, OBJECTS_PICKUPABLE_LISTS
+from objects import OBJECTS_PICKUPABLE, OBJECTS_MOVEABLE, OBJECTS_IMMOBILE, OBJECTS_PICKUPABLE_LISTS, OBJECTS_INTPHYS
 from separating_axis_theorem import sat_entry
 from optimal_path import generatepath
-from numpy.lib.scimath import sqrt
-from numpy import degrees
-from numpy.core import arctan2
 import math
 
 from machine_common_sense.mcs_controller_ai2thor import MAX_MOVE_DISTANCE
@@ -37,14 +35,27 @@ WALL_COUNTS = [0, 1, 2, 3]
 WALL_PROBS = [60, 20, 10, 10]
 MIN_RANDOM_INTERVAL = 0.05
 
-def random_real(a, b, step):
+
+def set_enclosed_info(goal, *targets):
+    """If any target is in an enclosed area, add 'target_enclosed' to the
+    'type_list' of the goal. If any target isn't in an enclosed area,
+    add 'target_not_enclosed'.
+    """
+    type_list = goal['type_list']
+    for target in targets:
+        enclosed_string = 'target_not_enclosed' if target.get('locationParent', None) is None else 'target_enclosed'
+        if not enclosed_string in type_list:
+            type_list.append(enclosed_string)
+
+            
+def random_real(a, b, step=MIN_RANDOM_INTERVAL):
     """Return a random real number N where a <= N <= b and N - a is divisible by step."""
     steps = int((b - a) / step)
     n = random.randint(0, steps)
     return a + (n * step)
 
 
-def finalize_object_definition(object_def):
+def finalize_object_definition(object_def: Dict[str, Any]) -> Dict[str, Any]:
     object_def_copy = copy.deepcopy(object_def)
 
     # apply choice if necessary
@@ -57,7 +68,7 @@ def finalize_object_definition(object_def):
     return object_def_copy
 
 
-def instantiate_object(object_def, object_location):
+def instantiate_object(object_def: Dict[str, Any], object_location: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new object from an object definition (as from the objects.json file). object_location will be modified
     by this function."""
     if object_def is None or object_location is None:
@@ -83,6 +94,9 @@ def instantiate_object(object_def, object_location):
     if 'offset' in object_def:
         object_location['position']['x'] -= object_def['offset']['x']
         object_location['position']['z'] -= object_def['offset']['z']
+
+    if 'rotation' in object_def:
+        object_location['rotation'] = copy.deepcopy(object_def['rotation'])
 
     shows = [object_location]
     new_object['shows'] = shows
@@ -120,7 +134,8 @@ def instantiate_object(object_def, object_location):
     return new_object
 
 
-def move_to_container(target, all_objects, bounding_rects, performer_position):
+def move_to_container(target: Dict[str, Any], all_objects: List[Dict[str, Any]],
+                      bounding_rects: List[List[Dict[str, float]]], performer_position: Dict[str, float]) -> bool:
     """Try to find a random container that target will fit in. If found, set the target's locationParent, and add
     container to all_objects (and bounding_rects). Return True iff the target was put in a container."""
     shuffled_containers = objects.get_enclosed_containers().copy()
@@ -137,12 +152,14 @@ def move_to_container(target, all_objects, bounding_rects, performer_position):
                 all_objects.append(found_container)
                 target['locationParent'] = found_container['id']
                 target['shows'][0]['position'] = found_area['position'].copy()
-                target['shows'][0]['rotation'] = geometry.ORIGIN.copy()
+                if not 'rotation' in target['shows'][0]:
+                    target['shows'][0]['rotation'] = geometry.ORIGIN.copy()
                 return True
     return False
 
 
-def generate_wall(wall_mat_choice, performer_position, other_rects):
+def generate_wall(wall_mat_choice: str, performer_position: Dict[str, float],
+                  other_rects: List[List[Dict[str, float]]]) -> Optional[Dict[str, Any]]:
     # Wanted to reuse written functions, but this is a bit more of a special snowflake
     # Generates obstacle walls placed in the scene.
 
@@ -182,7 +199,7 @@ def generate_wall(wall_mat_choice, performer_position, other_rects):
     return None
 
 
-def generate_image_file_name(target):
+def generate_image_file_name(target: Dict[str, Any]) -> str:
     if 'materials' not in target:
         return target['type']
 
@@ -190,7 +207,7 @@ def generate_image_file_name(target):
     return target['type'] + ('_' if len(material_name_list) > 0 else '') + ('_'.join(material_name_list))
 
 
-def find_image_for_object(object_def):
+def find_image_for_object(object_def: Dict[str, Any]) -> AnyStr:
     image_file_name = ""
 
     try:
@@ -205,8 +222,73 @@ def find_image_for_object(object_def):
         logging.warning('Image object could not be found, make sure you generated the image: ' + image_file_name)
 
 
-def find_image_name(target):
+def find_image_name(target: Dict[str, Any]) -> str:
     return generate_image_file_name(target) + '.png'
+
+
+def parse_path_section(path_section: List[List[float]], current_heading: float) -> Tuple[List[Dict[str, Any]], float]:
+    """Compute the actions for one path section, starting with
+    current_heading. Returns a tuple: (list of actions, new heading)"""
+    index = 1
+    actions = []
+    dx = path_section[1][0]-path_section[0][0]
+    dz = path_section[1][1]-path_section[0][1]
+    theta = math.degrees(math.atan2(dx,dz))
+
+        #IF my calculations are correct, this should be right no matter what
+        # I'm assuming a positive angle is a clockwise rotation- so this should work
+        #I think
+
+    delta_t = current_heading-theta
+    current_heading = theta
+    if delta_t != 0:
+        action = {
+            'action': 'RotateLook',
+            'params': {
+                'rotation': round(delta_t,0),
+                'horizon': 0.0
+            }
+        }
+        actions.append(action)
+    distance = math.sqrt( dx ** 2 + dz ** 2 )
+    frac, whole = math.modf(distance / MAX_MOVE_DISTANCE)
+    actions.extend([{
+        "action": "MoveAhead",
+        "params": {}
+    }] * int(whole))
+    actions.append({
+        "action": "MoveAhead",
+        "params": {
+            "amount": round(frac,POSITION_DIGITS)
+        }
+    })
+    return actions, current_heading
+
+
+def get_navigation_actions(start_location: Dict[str, Any], goal_object: Dict[str, Any],
+                           all_objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Get the action sequence for going from performer start to the goal_object."""
+    performer = (start_location['position']['x'], start_location['position']['z'])
+    if 'locationParent' in goal_object:
+        parent = next((obj for obj in all_objects if obj['id'] == goal_object['locationParent']), None)
+        if parent is None:
+            raise GoalException(f'object {goal_object["id"]} has parent {goal_object["locationParent"]} that does not exist')
+        goal_object = parent
+    goal = (goal_object['shows'][0]['position']['x'], goal_object['shows'][0]['position']['z'])
+    hole_rects = []
+
+    hole_rects.extend(object['shows'][0]['bounding_box'] for object
+                      in all_objects if object['id'] != goal_object['id']
+                      and 'locationParent' not in object)
+    path = generatepath(performer, goal, hole_rects)
+
+    actions = []
+    current_heading = start_location['rotation']['y']
+    for indx in range(len(path)-1):
+        new_actions, current_heading = parse_path_section(path[indx:indx+2], current_heading)
+        actions.extend(new_actions)
+
+    return actions
 
 
 class GoalException(Exception):
@@ -223,7 +305,7 @@ class Goal(ABC):
         self._performer_start = None
         self._targets = []
 
-    def update_body(self, body, find_path):
+    def update_body(self, body: Dict[str, Any], find_path: bool) -> Dict[str, Any]:
         """Helper method that calls other Goal methods to set performerStart, objects, and goal. Returns the goal body
         object."""
         body['performerStart'] = self.compute_performer_start()
@@ -231,13 +313,13 @@ class Goal(ABC):
         walls = self.generate_walls(body['wallMaterial'], body['performerStart']['position'],
                                     bounding_rects)
         body['objects'] = all_objects + walls
-        body['goal'] = self.get_config(goal_objects)
+        body['goal'] = self.get_config(goal_objects, all_objects + walls)
         if find_path:
-            body['answer']['actions'] = self.find_optimal_path(goal_objects, all_objects+walls)
-        
+            body['answer']['actions'] = self.find_optimal_path(goal_objects, all_objects + walls)
+
         return body
 
-    def compute_performer_start(self):
+    def compute_performer_start(self) -> Dict[str, Dict[str, float]]:
         """Compute the starting location (position & rotation) for the performer. Must return the same thing on
         multiple calls. This default implementation chooses a random location."""
         if self._performer_start is None:
@@ -253,19 +335,20 @@ class Goal(ABC):
             }
         return self._performer_start
 
-    def choose_object_def(self):
+    def choose_object_def(self) -> Dict[str, Any]:
         """Pick one object definition (to be added to the scene) and return a copy of it."""
         object_def_list = random.choices([OBJECTS_PICKUPABLE, OBJECTS_MOVEABLE, OBJECTS_IMMOBILE],
                                          [50, 25, 25])[0]
         return finalize_object_definition(random.choice(object_def_list))
 
     @abstractmethod
-    def compute_objects(self, wall_material_name):
+    def compute_objects(self, wall_material_name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[List[Dict[str, float]]]]:
         """Compute object instances for the scene. Returns a tuple:
         (objects required for the goal, all objects in the scene including objects required for the goal, bounding rectangles)"""
         pass
 
-    def add_objects(self, object_list, rectangles, performer_position):
+    def add_objects(self, object_list: List[Dict[str, Any]], rectangles: List[List[Dict[str, float]]],
+                    performer_position: Dict[str, float]) -> None:
         """Add random objects to fill object_list to some random number of objects up to MAX_OBJECTS. If object_list
         already has more than this randomly determined number, no new objects are added."""
         object_count = random.randint(1, MAX_OBJECTS)
@@ -278,49 +361,19 @@ class Goal(ABC):
                 obj = instantiate_object(object_def, obj_location)
                 object_list.append(obj)
 
-    def parse_path_section(self, path_section, current_heading):
-        index = 1
-        actions = []
-        dx = path_section[1][0]-path_section[0][0]
-        dz = path_section[1][1]-path_section[0][1]
-        theta = degrees(arctan2(dx,dz))
-  
-            #IF my calculations are correct, this should be right no matter what
-            # I'm assuming a positive angle is a clockwise rotation- so this should work
-            #I think
+    def _update_goal_info_list(self, goal, all_objects):
+        info_set = set(goal.get('info_list', []))
+        for obj in all_objects:
+            info_set |= frozenset(obj.get('info', []))
+        goal['info_list'] = list(info_set)
 
-        delta_t = current_heading-theta
-        current_heading = theta
-        if delta_t != 0:
-            action = {
-                'action': 'RotateLook',
-                'params': {
-                    'rotation': round(delta_t,0),
-                    'horizon': 0.0
-                    }
-                }
-            actions.append(action)
-        distance = sqrt( dx ** 2 + dz ** 2 )
-        frac, whole = math.modf(distance / MAX_MOVE_DISTANCE)
-        actions.extend([{
-                    "action": "MoveAhead",
-                    "params": {}
-                    }]*int(whole))
-        actions.append({
-                "action": "MoveAhead",
-                "params": {
-                    "amount": round(frac,POSITION_DIGITS)
-                    }
-            })
-        return actions
-
-    @abstractmethod
-    def get_config(self, goal_objects):
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Get the goal configuration. goal_objects is the objects required for the goal (as returned from
         compute_objects)."""
         pass
 
-    def generate_walls(self, material, performer_position, bounding_rects):
+    def generate_walls(self, material: str, performer_position: Dict[str, Any],
+                       bounding_rects: List[List[Dict[str, float]]]) -> List[Dict[str, Any]]:
         wall_count = random.choices(WALL_COUNTS, weights=WALL_PROBS, k=1)[0]
 
         walls = []
@@ -333,7 +386,8 @@ class Goal(ABC):
         return walls
 
     @abstractmethod
-    def find_optimal_path(self, goal_objects, all_objects):
+    def find_optimal_path(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> \
+            List[Dict[str, Any]]:
         """Compute the optimal set of moves and update the body object"""
         pass
 
@@ -347,11 +401,12 @@ class EmptyGoal(Goal):
     def compute_objects(self, wall_material_name):
         return [], [], []
 
-    def get_config(self, goal_objects):
-        return ''
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {}
 
-    def find_optimal_path(self, goal_objects, all_objects):
-        return ''
+    def find_optimal_path(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> \
+            List[Dict[str, Any]]:
+        return []
 
 
 class InteractionGoal(Goal, ABC):
@@ -364,25 +419,26 @@ class InteractionGoal(Goal, ABC):
         super(InteractionGoal, self).__init__()
         self._bounding_rects = []
 
-    def _set_performer_start(self):
+    def _set_performer_start(self) -> None:
         self._performer_start = self.compute_performer_start()
 
-    def _set_target_def(self):
+    def _set_target_def(self) -> None:
         """Chooses a pickupable object since most interaction goals require that."""
         pickupable_defs = random.choice(OBJECTS_PICKUPABLE_LISTS)
         self._target_def = finalize_object_definition(random.choice(pickupable_defs))
 
-    def _set_target_location(self):
+    def _set_target_location(self) -> None:
         performer_position = self._performer_start['position']
         self._target_location = calc_obj_pos(performer_position, self._bounding_rects, self._target_def)
         if self._target_location is None:
             raise GoalException(f'could not place target object (type={self._target_def["type"]})')
 
-    def _set_goal_objects(self):
+    def _set_goal_objects(self) -> None:
         """Set all objects required for the goal other than the target, if any. May update _bounding_rects."""
         self._goal_objects = []
 
-    def add_objects(self, all_objects, bounding_rects, performer_position):
+    def add_objects(self, all_objects: List[Dict[str, Any]], bounding_rects: List[List[Dict[str, float]]],
+                    performer_position: Dict[str, float]) -> None:
         """Maybe add a container and put the target inside it. If so, maybe put other objects in other objects, too."""
         if random.random() <= self.TARGET_CONTAINED_CHANCE:
             if move_to_container(self._target, all_objects, bounding_rects, performer_position):
@@ -393,7 +449,7 @@ class InteractionGoal(Goal, ABC):
                             and random.random() <= self.OBJECT_CONTAINED_CHANCE:
                         move_to_container(obj, all_objects, bounding_rects, performer_position)
 
-    def compute_objects(self, wall_material_name):
+    def compute_objects(self, wall_material_name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[List[Dict[str, float]]]]:
         self._set_performer_start()
         self._set_target_def()
         self._set_target_location()
@@ -405,7 +461,7 @@ class InteractionGoal(Goal, ABC):
         self.add_objects(all_objects, self._bounding_rects, self._performer_start['position'])
 
         return all_goal_objects, all_objects, self._bounding_rects
-        
+
 
 class RetrievalGoal(InteractionGoal):
     """Going to a specified object and picking it up."""
@@ -420,18 +476,18 @@ class RetrievalGoal(InteractionGoal):
     def __init__(self):
         super(RetrievalGoal, self).__init__()
 
-    def get_config(self, objects):
-        if len(objects) < 1:
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if len(goal_objects) < 1:
             raise ValueError('need at least 1 object for this goal')
 
-        target = objects[0]
+        target = goal_objects[0]
         self._target = target
         self._targets.append(target)
         target_image_obj = find_image_for_object(target)
         image_name = find_image_name(target)
 
         goal = copy.deepcopy(self.TEMPLATE)
-        goal['info_list'] = target['info']
+        set_enclosed_info(goal, target)
         goal['metadata'] = {
             'target': {
                 'id': target['id'],
@@ -442,21 +498,15 @@ class RetrievalGoal(InteractionGoal):
             }
         }
         goal['description'] = f'Find and pick up the {target["info"][-1]}.'
+        self._update_goal_info_list(goal, all_objects)
         return goal
 
-    def find_optimal_path(self, goal_objects, all_objects):
+    def find_optimal_path(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> \
+            List[Dict[str, Any]]:
         # Goal should be a singleton... I hope
-        performer = (self._performer_start['position']['x'],self._performer_start['position']['z'])
-        goal = (goal_objects[0]['shows'][0]['position']['x'],goal_objects[0]['shows'][0]['position']['z'])
-        hole_rects=[]
-        hole_rects.extend(object['shows'][0]['bounding_box'] for object in all_objects if object['id'] != goal_objects[0]['id'])
-        path = generatepath(performer, goal, hole_rects)
+        actions = get_navigation_actions(self._performer_start, goal_objects[0], all_objects)
 
-        actions = []
-        current_heading = self._performer_start['rotation']['y']
-        for indx in range(len(path)-1):
-            actions.extend(self.parse_path_section(path[indx:indx+2], current_heading))
-
+        # TODO: look at the target object (future ticket)
         actions.append({
             'action': 'PickupObject',
             'params': {
@@ -483,7 +533,7 @@ class TransferralGoal(InteractionGoal):
     def __init__(self):
         super(TransferralGoal, self).__init__()
 
-    def _set_goal_objects(self):
+    def _set_goal_objects(self) -> None:
         targets = objects.get_all_object_defs()
         random.shuffle(targets)
         target2_def = next((tgt for tgt in targets if 'stackTarget' in tgt.get('attributes', [])), None)
@@ -493,10 +543,10 @@ class TransferralGoal(InteractionGoal):
         target2 = instantiate_object(target2_def, target2_location)
         self._goal_objects = [target2]
 
-    def get_config(self, objects):
-        if len(objects) < 2:
-            raise ValueError(f'need at least 2 objects for this goal, was given {len(objects)}')
-        target1, target2 = objects[0:2]
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if len(goal_objects) < 2:
+            raise ValueError(f'need at least 2 objects for this goal, was given {len(goal_objects)}')
+        target1, target2 = goal_objects[0:2]
         if not target1.get('pickupable', False):
             raise ValueError(f'first object must be "pickupable": {target1}')
         if not target2.get('stackTarget', False):
@@ -510,9 +560,8 @@ class TransferralGoal(InteractionGoal):
         image_name1 = find_image_name(target1)
         image_name2 = find_image_name(target2)
 
-        goal = copy.deepcopy(self.TEMPLATE)
-        both_info = set(target1['info'] + target2['info'])
-        goal['info_list'] = list(both_info)
+        goal: Dict[str, Any] = copy.deepcopy(self.TEMPLATE)
+        set_enclosed_info(goal, target1, target2)
         goal['metadata'] = {
             'target_1': {
                 'id': target1['id'],
@@ -532,34 +581,38 @@ class TransferralGoal(InteractionGoal):
         }
         goal['description'] = f'Find and pick up the {target1["info"][-1]} and move it {relationship.value} ' \
             f'the {target2["info"][-1]}.'
+        self._update_goal_info_list(goal, all_objects)
         return goal
 
-    def find_optimal_path(self, goal_objects, all_objects):
+    def find_optimal_path(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> \
+            List[Dict[str, Any]]:
         # Goal should be a singleton... I hope
-        performer = (self._performer_start['position']['x'],self._performer_start['position']['z'])
-        goal = (goal_objects[0]['shows'][0]['position']['x'],goal_objects[0]['shows'][0]['position']['z'])
-        hole_rects=[]
-        hole_rects.extend(object['shows'][0]['bounding_box'] for object in all_objects if object['id'] != goal_objects[0]['id'])
-        path = generatepath(performer, goal, hole_rects)
-  
-        actions = []
-        current_heading = self._performer_start['rotation']['y']
-        for indx in range(len(path)-1):
-            actions.extend(self.parse_path_section(path[indx:indx+2], current_heading))
-
+        actions = get_navigation_actions(self._performer_start, goal_objects[0], all_objects)
+        # TODO: look at the target object (future ticket)
         actions.append({
             'action': 'PickupObject',
             'params': {
                 'objectId': goal_objects[0]['id']
                 }
             })
-        target = (goal_objects[1]['shows'][0]['position']['x'], goal_objects[1]['shows'][0]['position']['z'])
         hole_rects = []
-        hole_rects.extend(object['shows'][0]['bounding_box'] for object in all_objects if  ( object['id'] != goal_objects[0]['id'] and object['id'] != goal_objects[1]['id']))
-        path  = generatepath(goal,target, hole_rects)
+        hole_rects.extend(object['shows'][0]['bounding_box'] for object
+                          in all_objects if (object['id'] != goal_objects[0]['id']
+                                             and object['id'] != goal_objects[1]['id']
+                                             and 'locationParent' not in object))
+        if 'locationParent' in goal_objects[0]:
+            parent = next((obj for obj in all_objects if obj['id'] == goal_objects[0]['locationParent']))
+            target = (parent['shows'][0]['position']['x'], parent['shows'][0]['position']['z'])
+        else:
+            target = (goal_objects[0]['shows'][0]['position']['x'], goal_objects[0]['shows'][0]['position']['z'])
+        goal = (goal_objects[1]['shows'][0]['position']['x'], goal_objects[1]['shows'][0]['position']['z'])
+        path = generatepath(target, goal, hole_rects)
+        current_heading = self._performer_start['rotation']['y']
         for indx in range(len(path)-1):
-            actions.extend(self.parse_path_section(path[indx:indx+2], current_heading))
-            
+            actions, current_heading = parse_path_section(path[indx:indx+2], current_heading)
+            actions.extend(actions)
+
+        # TODO: maybe look at receptacle part of the parent object (future ticket)
         actions.append({
             'action': 'PutObject',
             'params': {
@@ -583,7 +636,7 @@ class TraversalGoal(Goal):
     def __init__(self):
         super(TraversalGoal, self).__init__()
 
-    def compute_objects(self, wall_material_name):
+    def compute_objects(self, wall_material_name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[List[Dict[str, float]]]]:
         # add objects we need for the goal
         target_def = self.choose_object_def()
         performer_start = self.compute_performer_start()
@@ -600,17 +653,17 @@ class TraversalGoal(Goal):
 
         return [target], all_objects, bounding_rects
 
-    def get_config(self, objects):
-        if len(objects) < 1:
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if len(goal_objects) < 1:
             raise ValueError('need at least 1 object for this goal')
 
-        target = objects[0]
+        target = goal_objects[0]
 
         target_image_obj = find_image_for_object(target)
         image_name = find_image_name(target)
 
-        goal = copy.deepcopy(self.TEMPLATE)
-        goal['info_list'] = target['info']
+        goal: Dict[str, Any] = copy.deepcopy(self.TEMPLATE)
+        set_enclosed_info(goal, target)
         goal['metadata'] = {
             'target': {
                 'id': target['id'],
@@ -621,22 +674,14 @@ class TraversalGoal(Goal):
             }
         }
         goal['description'] = f'Find the {target["info"][-1]} and move near it.'
+        self._update_goal_info_list(goal, all_objects)
         return goal
 
-    def find_optimal_path(self, goal_objects, all_objects):
+    def find_optimal_path(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> \
+            List[Dict[str, Any]]:
         # Goal should be a singleton... I hope
-        performer = (self._performer_start['position']['x'],self._performer_start['position']['z'])
-        goal = (goal_objects[0]['shows'][0]['position']['x'],goal_objects[0]['shows'][0]['position']['z'])
-        hole_rects = []
-        hole_rects.extend(object['shows'][0]['bounding_box'] for object in all_objects if object['id'] != goal_objects[0]['id'])
-        path = generatepath(performer, goal, hole_rects)
-
-        actions = []
-        current_heading = self._performer_start['rotation']['y']
-        for indx in range(len(path)-1):
-            actions.extend(self.parse_path_section(path[indx:indx+2], current_heading))
-
-        return actions
+        # TODO: (maybe) look at actual object if it's inside a parent (future ticket)
+        return get_navigation_actions(self._performer_start, goal_objects[0], all_objects)
 
 
 class IntPhysGoal(Goal, ABC):
@@ -665,12 +710,26 @@ class IntPhysGoal(Goal, ABC):
     # post-falling actions, meaning that the objects can appear and
     # begin falling anytime between steps 13 and 20, inclusive.
     EARLIEST_ACTION_START_STEP = 13
-    LATEST_ACTION_START_STEP = 20
+    LATEST_ACTION_FALL_DOWN_START_STEP = 20
+    LAST_STEP_MOVE_ACROSS = 60
+    LAST_STEP_FALL_DOWN = 40
+    LAST_STEP_RAMP = 50
+    LAST_STEP_RAMP_BUFFER = 10
+    RAMP_DOWNWARD_FORCE = -350
+    DEFAULT_TORQUE = {
+        'stepBegin': 0,
+        'stepEnd': 60,
+        'vector': {
+            'x': 0,
+            'y': 0,
+            'z': 0
+        }
+    }
 
     def __init__(self):
         super(IntPhysGoal, self).__init__()
 
-    def compute_performer_start(self):
+    def compute_performer_start(self) -> Dict[str, Dict[str, float]]:
         if self._performer_start is None:
             self._performer_start = {
                 'position': {
@@ -684,62 +743,37 @@ class IntPhysGoal(Goal, ABC):
             }
         return self._performer_start
 
-    def update_body(self, body, find_path):
+    def update_body(self, body: Dict[str, Any], find_path: bool):
         body = super(IntPhysGoal, self).update_body(body, find_path)
+        for obj in body['objects']:
+            obj['torques'] = [IntPhysGoal.DEFAULT_TORQUE]
+
         body['observation'] = True
         body['answer'] = {
             'choice': 'plausible'
         }
         return body
 
-    def find_optimal_path(self, goal_objects, all_objects):
-        return ''
+    def find_optimal_path(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> \
+            List[Dict[str, Any]]:
+        return []
 
-    def _get_last_step(self):
-        return 40
-
-    def get_config(self, goal_objects):
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
         goal = copy.deepcopy(self.TEMPLATE)
-        goal['last_step'] = self._get_last_step()
+        goal['last_step'] = self._last_step
         goal['action_list'] = [['Pass']] * goal['last_step']
-        scenery_type = f'scenery_objects_{self._scenery_count}'
-        goal['type_list'].append(scenery_type)
 
+        self._update_goal_info_list(goal, all_objects)
         return goal
 
-    def generate_walls(self, material, performer_position, bounding_rects):
+    def generate_walls(self, material: str, performer_position: Dict[str, Any],
+                       bounding_rects: List[List[Dict[str, float]]]) -> List[Dict[str, Any]]:
         """IntPhys goals have no walls."""
         return []
 
-    def _compute_scenery(self):
-        MIN_VISIBLE_X = -6.5
-        MAX_VISIBLE_X = 6.5
-
-        def random_x():
-            return random_real(MIN_VISIBLE_X, MAX_VISIBLE_X, MIN_RANDOM_INTERVAL)
-
-        def random_z():
-            # Choose values so the scenery is placed between the
-            # moving IntPhys objects and the room's wall.
-            return random_real(3.25, 4.95, MIN_RANDOM_INTERVAL)
-
-        self._scenery_count = random.choices((0, 1, 2, 3, 4, 5),
-                                             (50, 10, 10, 10, 10, 10))[0]
-        scenery_list = []
-        scenery_rects = []
-        scenery_defs = objects.OBJECTS_MOVEABLE + objects.OBJECTS_IMMOBILE
-        for i in range(self._scenery_count):
-            location = None
-            while location is None:
-                scenery_def = finalize_object_definition(random.choice(scenery_defs))
-                location = calc_obj_pos(geometry.ORIGIN, scenery_rects, scenery_def,
-                                        random_x, random_z)
-            scenery_obj = instantiate_object(scenery_def, location)
-            scenery_list.append(scenery_obj)
-        return scenery_list
-
     def compute_objects(self, wall_material_name):
-        func = random.choice([IntPhysGoal._get_objects_moving_across, IntPhysGoal._get_objects_falling_down])
+        func = random.choice([IntPhysGoal._get_objects_and_occluders_moving_across, IntPhysGoal._get_objects_falling_down])
+        self._last_step = IntPhysGoal.LAST_STEP_FALL_DOWN
         objs, occluders = func(self, wall_material_name)
         return [], objs + occluders, []
 
@@ -770,10 +804,19 @@ class IntPhysGoal(Goal, ABC):
             for _ in range(IntPhysGoal.MAX_OCCLUDER_TRIES):
                 paired_obj = obj_list[i]
                 min_scale = min(max(paired_obj['shows'][0]['scale']['x'], IntPhysGoal.MIN_OCCLUDER_SCALE), IntPhysGoal.MAX_OCCLUDER_SCALE)
-                position_by_step = paired_obj['intphys_options']['position_by_step']
-                position_index = random.randrange(len(position_by_step))
-                paired_x = position_by_step[position_index]
+                x_scale = random_real(min_scale, IntPhysGoal.MAX_OCCLUDER_SCALE, MIN_RANDOM_INTERVAL)
+                position_by_step = paired_obj['intphys_option']['position_by_step']
                 paired_z = paired_obj['shows'][0]['position']['z']
+                factor = IntPhysGoal.NEAR_X_PERSPECTIVE_FACTOR \
+                    if paired_z == IntPhysGoal.OBJECT_NEAR_Z \
+                       else IntPhysGoal.FAR_X_PERSPECTIVE_FACTOR
+                min_paired_x = -3 + x_scale / 2
+                max_paired_x = 3 - x_scale / 2
+                while True:
+                    position_index = random.randrange(len(position_by_step))
+                    paired_x = position_by_step[position_index]
+                    if min_paired_x <= paired_x <= max_paired_x:
+                        break
                 if paired_z == IntPhysGoal.OBJECT_NEAR_Z:
                     occluder_x = paired_x * IntPhysGoal.NEAR_X_PERSPECTIVE_FACTOR
                 elif paired_z == IntPhysGoal.OBJECT_FAR_Z:
@@ -781,7 +824,6 @@ class IntPhysGoal(Goal, ABC):
                 else:
                     logging.warning(f'Unsupported z for occluder target "{paired_obj["id"]}": {paired_z}')
                     occluder_x = paired_x
-                x_scale = random_real(min_scale, IntPhysGoal.MAX_OCCLUDER_SCALE, MIN_RANDOM_INTERVAL)
                 found_collision = False
                 for other_occluder in occluder_list:
                     if geometry.occluders_too_close(other_occluder, occluder_x, x_scale):
@@ -791,18 +833,18 @@ class IntPhysGoal(Goal, ABC):
                     occluder_fits = True
                     break
             if occluder_fits:
-                occluder_objs = objects.create_occluder(random.choice(non_wall_materials),
-                                                        random.choice(materials.METAL_MATERIALS),
+                occluder_objs = objects.create_occluder(random.choice(non_wall_materials)[0],
+                                                        random.choice(materials.METAL_MATERIALS)[0],
                                                         occluder_x, x_scale)
                 occluder_list.extend(occluder_objs)
                 break
             else:
                 logging.warning(f'could not fit required occluder at x={occluder_x}')
                 raise GoalException(f'Could not add minimum number of occluders ({num_paired_occluders})')
-        self._add_occluders(occluder_list, num_occluders - num_paired_occluders, non_wall_materials)
+        self._add_occluders(occluder_list, num_occluders - num_paired_occluders, non_wall_materials, False)
         return occluder_list
 
-    def _add_occluders(self, occluder_list, num_to_add, non_wall_materials):
+    def _add_occluders(self, occluder_list, num_to_add, non_wall_materials, sideways):
         """Create additional, non-paired occluders and add them to occluder_list."""
         for _ in range(num_to_add):
             occluder_fits = False
@@ -822,59 +864,76 @@ class IntPhysGoal(Goal, ABC):
                     occluder_fits = True
                     break
             if occluder_fits:
-                occluder_objs = objects.create_occluder(random.choice(non_wall_materials),
-                                                        random.choice(materials.METAL_MATERIALS),
-                                                        occluder_x, x_scale)
+                occluder_objs = objects.create_occluder(random.choice(non_wall_materials)[0],
+                                                        random.choice(materials.METAL_MATERIALS)[0],
+                                                        occluder_x, x_scale, sideways)
                 occluder_list.extend(occluder_objs)
             else:
                 logging.debug(f'could not fit occluder at x={occluder_x}')
 
-    def _get_objects_moving_across(self, wall_material_name):
-        """Get objects to move across the scene and occluders for them. Returns (objects, occluders) pair."""
-        class Position(Enum):
-            RIGHT_FIRST_NEAR = auto()
-            RIGHT_LAST_NEAR = auto()
-            RIGHT_FIRST_FAR = auto()
-            RIGHT_LAST_FAR = auto()
-            LEFT_FIRST_NEAR = auto()
-            LEFT_LAST_NEAR = auto()
-            LEFT_FIRST_FAR = auto()
-            LEFT_LAST_FAR = auto()
+    class Position(Enum):
+        RIGHT_FIRST_NEAR = auto()
+        RIGHT_LAST_NEAR = auto()
+        RIGHT_FIRST_FAR = auto()
+        RIGHT_LAST_FAR = auto()
+        LEFT_FIRST_NEAR = auto()
+        LEFT_LAST_NEAR = auto()
+        LEFT_FIRST_FAR = auto()
+        LEFT_LAST_FAR = auto()
 
-        num_objects = random.choices((1, 2, 3), (40, 30, 30))[0]
+    def _get_objects_and_occluders_moving_across(self, wall_material_name: str):
+        """Get objects to move across the scene and occluders for them. Returns (objects, occluders) pair."""
+        self._last_step = IntPhysGoal.LAST_STEP_MOVE_ACROSS
+        # Subtract 5 for end occluder movement and rotation
+        new_objects = self._get_objects_moving_across(wall_material_name, self._last_step - 5)
+        occluders = self._get_occluders(new_objects, wall_material_name)
+        return new_objects, occluders
+
+    def _get_num_objects_moving_across(self):
+        return random.choices((1, 2, 3), (40, 30, 30))[0]
+
+    def _get_objects_moving_across(self, wall_material_name: str, last_action_end_step,
+                                   earliest_action_start_step = EARLIEST_ACTION_START_STEP,
+                                   valid_positions: Iterable = frozenset(Position),
+                                   positions = None,
+                                   valid_defs: List[Dict[str, Any]] = OBJECTS_INTPHYS) \
+                                   -> List[Dict[str, Any]]:
+        """Get objects to move across the scene. Returns objects."""
+        num_objects = self._get_num_objects_moving_across()
         # The following x positions start outside the camera viewport
         # and ensure that objects with scale 1 don't collide with each
         # other.
         object_positions = {
-            Position.RIGHT_FIRST_NEAR: (4.2, IntPhysGoal.OBJECT_NEAR_Z),
-            Position.RIGHT_LAST_NEAR: (5.3, IntPhysGoal.OBJECT_NEAR_Z),
-            Position.RIGHT_FIRST_FAR: (4.8, IntPhysGoal.OBJECT_FAR_Z),
-            Position.RIGHT_LAST_FAR: (5.9, IntPhysGoal.OBJECT_FAR_Z),
-            Position.LEFT_FIRST_NEAR: (-4.2, IntPhysGoal.OBJECT_NEAR_Z),
-            Position.LEFT_LAST_NEAR: (-5.3, IntPhysGoal.OBJECT_NEAR_Z),
-            Position.LEFT_FIRST_FAR: (-4.8, IntPhysGoal.OBJECT_FAR_Z),
-            Position.LEFT_LAST_FAR: (-5.9, IntPhysGoal.OBJECT_FAR_Z)
+            IntPhysGoal.Position.RIGHT_FIRST_NEAR: (4.2, IntPhysGoal.OBJECT_NEAR_Z),
+            IntPhysGoal.Position.RIGHT_LAST_NEAR: (5.3, IntPhysGoal.OBJECT_NEAR_Z),
+            IntPhysGoal.Position.RIGHT_FIRST_FAR: (4.8, IntPhysGoal.OBJECT_FAR_Z),
+            IntPhysGoal.Position.RIGHT_LAST_FAR: (5.9, IntPhysGoal.OBJECT_FAR_Z),
+            IntPhysGoal.Position.LEFT_FIRST_NEAR: (-4.2, IntPhysGoal.OBJECT_NEAR_Z),
+            IntPhysGoal.Position.LEFT_LAST_NEAR: (-5.3, IntPhysGoal.OBJECT_NEAR_Z),
+            IntPhysGoal.Position.LEFT_FIRST_FAR: (-4.8, IntPhysGoal.OBJECT_FAR_Z),
+            IntPhysGoal.Position.LEFT_LAST_FAR: (-5.9, IntPhysGoal.OBJECT_FAR_Z)
         }
         exclusions = {
-            Position.RIGHT_FIRST_NEAR: (Position.LEFT_FIRST_NEAR, Position.LEFT_LAST_NEAR),
-            Position.RIGHT_LAST_NEAR: (Position.LEFT_FIRST_NEAR, Position.LEFT_LAST_NEAR),
-            Position.RIGHT_FIRST_FAR: (Position.LEFT_FIRST_FAR, Position.LEFT_LAST_FAR),
-            Position.RIGHT_LAST_FAR: (Position.LEFT_FIRST_FAR, Position.LEFT_LAST_FAR),
-            Position.LEFT_FIRST_NEAR: (Position.RIGHT_FIRST_NEAR, Position.RIGHT_LAST_NEAR),
-            Position.LEFT_LAST_NEAR: (Position.RIGHT_FIRST_NEAR, Position.RIGHT_LAST_NEAR),
-            Position.LEFT_FIRST_FAR: (Position.RIGHT_FIRST_FAR, Position.RIGHT_LAST_FAR),
-            Position.LEFT_LAST_FAR: (Position.RIGHT_FIRST_FAR, Position.RIGHT_LAST_FAR)
+            IntPhysGoal.Position.RIGHT_FIRST_NEAR: (IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR),
+            IntPhysGoal.Position.RIGHT_LAST_NEAR: (IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR),
+            IntPhysGoal.Position.RIGHT_FIRST_FAR: (IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR),
+            IntPhysGoal.Position.RIGHT_LAST_FAR: (IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR),
+            IntPhysGoal.Position.LEFT_FIRST_NEAR: (IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR),
+            IntPhysGoal.Position.LEFT_LAST_NEAR: (IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR),
+            IntPhysGoal.Position.LEFT_FIRST_FAR: (IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR),
+            IntPhysGoal.Position.LEFT_LAST_FAR: (IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR)
         }
-        # Object in key position must have velocities <= velocities
-        # for object in value position (e.g., object in b must have
-        # velocities <= velocities for object in a).
-        velocity_ordering = {
-            Position.RIGHT_LAST_NEAR: Position.RIGHT_FIRST_NEAR,
-            Position.RIGHT_LAST_FAR: Position.RIGHT_FIRST_FAR,
-            Position.LEFT_LAST_NEAR: Position.LEFT_FIRST_NEAR,
-            Position.LEFT_LAST_FAR: Position.LEFT_FIRST_FAR
+        # Object in key position must have acceleration <=
+        # acceleration for object in value position (e.g., object in
+        # RIGHT_LAST_NEAR must have acceleration <= acceleration for
+        # object in RIGHT_FIRST_NEAR).
+        acceleration_ordering = {
+            IntPhysGoal.Position.RIGHT_LAST_NEAR: IntPhysGoal.Position.RIGHT_FIRST_NEAR,
+            IntPhysGoal.Position.RIGHT_LAST_FAR: IntPhysGoal.Position.RIGHT_FIRST_FAR,
+            IntPhysGoal.Position.LEFT_LAST_NEAR: IntPhysGoal.Position.LEFT_FIRST_NEAR,
+            IntPhysGoal.Position.LEFT_LAST_FAR: IntPhysGoal.Position.LEFT_FIRST_FAR
         }
-        available_locations = set(object_positions.keys())
+        available_locations = set(valid_positions)
         location_assignments = {}
         new_objects = []
         for i in range(num_objects):
@@ -882,23 +941,24 @@ class IntPhysGoal(Goal, ABC):
             available_locations.remove(location)
             for loc in exclusions[location]:
                 available_locations.discard(loc)
-            # TODO: later this will get imported from objects (or somewhere else)
-            from objects_intphys_v1 import OBJECTS_INTPHYS
-            obj_def = finalize_object_definition(random.choice(OBJECTS_INTPHYS))
+            obj_def = finalize_object_definition(random.choice(valid_defs))
             remaining_intphys_options = obj_def['intphys_options'].copy()
             while len(remaining_intphys_options) > 0:
                 intphys_option = random.choice(remaining_intphys_options)
-                if location in velocity_ordering and velocity_ordering[location] in location_assignments:
+                if location in acceleration_ordering and \
+                   acceleration_ordering[location] in location_assignments:
                     # ensure the objects won't collide
-                    other_obj = location_assignments[velocity_ordering[location]]
-                    # TODO: compute value for collision (MCS-188)
-                    collision = False
+                    acceleration = abs(intphys_option['force']['x'] / obj_def['mass'])
+                    other_obj = location_assignments[acceleration_ordering[location]]
+                    other_acceleration = abs(other_obj['intphys_option']['force']['x'] / other_obj['mass'])
+
+                    collision = acceleration > other_acceleration
                     if not collision:
                         break
                     elif len(remaining_intphys_options) == 1:
-                        # last chance, so just swap the items to make their relative velocities "ok"
+                        # last chance, so just swap the items to make their relative acceleration "ok"
                         location_assignments[location] = other_obj
-                        location = velocity_ordering[location]
+                        location = acceleration_ordering[location]
                         location_assignments[location] = None # to be assigned later
                         break
                 else:
@@ -908,7 +968,7 @@ class IntPhysGoal(Goal, ABC):
             object_location = {
                 'position': {
                     'x': object_positions[location][0],
-                    'y': intphys_option['y'],
+                    'y': intphys_option['y'] + obj_def['position_y'],
                     'z': object_positions[location][1]
                 }
             }
@@ -919,35 +979,36 @@ class IntPhysGoal(Goal, ABC):
             # adjust position_by_step and remove outliers
             new_positions = []
             for position in position_by_step:
-                if location in (Position.RIGHT_FIRST_NEAR, Position.RIGHT_LAST_NEAR, Position.RIGHT_FIRST_FAR, Position.RIGHT_LAST_FAR):
+                if location in (IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR, IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR):
                     position = object_position_x - position
                 else:
                     position = object_position_x + position
                 new_positions.append(position)
-            if location in (Position.RIGHT_FIRST_NEAR, Position.RIGHT_LAST_NEAR, Position.LEFT_FIRST_NEAR, Position.LEFT_LAST_NEAR):
+            if location in (IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR, IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR):
                 max_x = IntPhysGoal.VIEWPORT_LIMIT_NEAR + obj_def['scale']['x'] / 2.0 * IntPhysGoal.VIEWPORT_PERSPECTIVE_FACTOR
             else:
                 max_x = IntPhysGoal.VIEWPORT_LIMIT_FAR + obj_def['scale']['x'] / 2.0 * IntPhysGoal.VIEWPORT_PERSPECTIVE_FACTOR
             filtered_position_by_step = [position for position in new_positions if (abs(position) <= max_x)]
             # set shows.stepBegin
-            min_stepBegin = IntPhysGoal.EARLIEST_ACTION_START_STEP
-            if location in velocity_ordering and velocity_ordering[location] in location_assignments:
-                min_stepBegin = location_assignments[velocity_ordering[location]]['shows'][0]['stepBegin']
-            stepsBegin = random.randint(min_stepBegin, 55 - len(filtered_position_by_step))
-            obj['shows'][0]['stepsBegin'] = stepsBegin
+            min_step_begin = earliest_action_start_step
+            if location in acceleration_ordering and acceleration_ordering[location] in location_assignments:
+                min_step_begin = location_assignments[acceleration_ordering[location]]['shows'][0]['stepBegin']
+            stepBegin = random.randint(min_step_begin, last_action_end_step - len(filtered_position_by_step))
+            obj['shows'][0]['stepBegin'] = stepBegin
             obj['forces'] = [{
-                'stepBegin': stepsBegin,
-                'stepEnd': 55,
+                'stepBegin': stepBegin,
+                'stepEnd': last_action_end_step,
                 'vector': intphys_option['force']
             }]
-            if location in (Position.RIGHT_FIRST_NEAR, Position.RIGHT_LAST_NEAR, Position.RIGHT_FIRST_FAR, Position.RIGHT_LAST_FAR):
+            if location in (IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR, IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR):
                 obj['forces'][0]['vector']['x'] *= -1
             intphys_option['position_by_step'] = filtered_position_by_step
-            obj['intphys_options'] = intphys_option
+            obj['intphys_option'] = intphys_option
             new_objects.append(obj)
+            if positions is not None:
+                positions.append(location)
 
-        occluders = self._get_occluders(new_objects, wall_material_name)
-        return new_objects, occluders
+        return new_objects
 
     def _get_objects_falling_down(self, wall_material_name):
         MAX_POSITION_TRIES = 100
@@ -984,10 +1045,10 @@ class IntPhysGoal(Goal, ABC):
                     'z': random.choice((IntPhysGoal.OBJECT_NEAR_Z, IntPhysGoal.OBJECT_FAR_Z))
                 }
             }
-            obj_def = random.choice(objects_intphys_v1.OBJECTS_INTPHYS)
+            obj_def = random.choice(OBJECTS_INTPHYS)
             obj = instantiate_object(obj_def, location)
             obj['shows'][0]['stepBegin'] = random.randint(IntPhysGoal.EARLIEST_ACTION_START_STEP,
-                                                          IntPhysGoal.LATEST_ACTION_START_STEP)
+                                                          IntPhysGoal.LATEST_ACTION_FALL_DOWN_START_STEP)
             object_list.append(obj)
         # place required occluders, then (maybe) some random ones
         num_occluders = 2 if num_objects == 2 else random.choice((1, 2))
@@ -1014,11 +1075,11 @@ class IntPhysGoal(Goal, ABC):
                     max_scale = scale
             x_scale = random_real(min_scale, max_scale, MIN_RANDOM_INTERVAL)
             adjusted_x = x_position * factor
-            occluder_pair = objects.create_occluder(random.choice(non_wall_materials),
-                                                    random.choice(materials.METAL_MATERIALS),
+            occluder_pair = objects.create_occluder(random.choice(non_wall_materials)[0],
+                                                    random.choice(materials.METAL_MATERIALS)[0],
                                                     adjusted_x, x_scale, True)
             occluders.extend(occluder_pair)
-        self._add_occluders(occluders, num_occluders - num_objects, non_wall_materials)
+        self._add_occluders(occluders, num_occluders - num_objects, non_wall_materials, True)
 
         return object_list, occluders
 
@@ -1030,29 +1091,113 @@ class GravityGoal(IntPhysGoal):
         'type_list': ['observation', 'action_none', 'intphys', 'gravity'],
         'task_list': ['choose'],
         'description': '',
-        'metadata': {}
+        'metadata': {
+            'choose': ['plausible', 'implausible']
+        }
     }
 
     def __init__(self):
         super(GravityGoal, self).__init__()
-        self.OBJECT_PROBABILITIES = (
-            (IntPhysGoal._get_objects_falling_down, GravityGoal._get_ramp_going_down, GravityGoal._get_ramp_going_up),
-            (20, 60, 20)
-        )
 
-    def compute_objects(self, wall_material_name):
-        func = random.choices(self.OBJECT_PROBABILITIES[0], self.OBJECT_PROBABILITIES[1])[0]
-        objs = func(self, wall_material_name)
-        objs += self._compute_scenery()
-        return [], objs, []
+    def get_config(self, goal_objects: List[Dict[str, Any]], all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
+        goal = super(GravityGoal, self).get_config(goal_objects, all_objects)
+        scenery_type = f'scenery_objects_{self._scenery_count}'
+        goal['type_list'].append(scenery_type)
+        return goal
 
-    def _get_ramp_going_down(self, wall_material_name):
-        # TODO: in a future ticket
-        return []
+    def _compute_scenery(self):
+        MIN_VISIBLE_X = -6.5
+        MAX_VISIBLE_X = 6.5
+        MIN_Z = 3.25
+        MAX_Z = 4.95
 
-    def _get_ramp_going_up(self, wall_material_name):
-        # TODO: in a future ticket
-        return []
+        def random_x():
+            return random_real(MIN_VISIBLE_X, MAX_VISIBLE_X, MIN_RANDOM_INTERVAL)
+
+        def random_z():
+            # Choose values so the scenery is placed between the
+            # moving IntPhys objects and the room's wall.
+            return random_real(MIN_Z, MAX_Z, MIN_RANDOM_INTERVAL)
+
+        self._scenery_count = random.choices((0, 1, 2, 3, 4, 5),
+                                             (50, 10, 10, 10, 10, 10))[0]
+        scenery_list = []
+        scenery_rects = []
+        scenery_defs = objects.OBJECTS_MOVEABLE + objects.OBJECTS_IMMOBILE
+        for i in range(self._scenery_count):
+            location = None
+            while location is None:
+                scenery_def = finalize_object_definition(random.choice(scenery_defs))
+                location = calc_obj_pos(geometry.ORIGIN, scenery_rects, scenery_def,
+                                        random_x, random_z)
+                if location is not None:
+                    # check that the bounds are valid
+                    for point in location['bounding_box']:
+                        x = point['x']
+                        z = point['z']
+                        if x < MIN_VISIBLE_X or x > MAX_VISIBLE_X or \
+                           z < MIN_Z or z > MAX_Z:
+                            # reset location so we try again
+                            location = None
+                            break
+            scenery_obj = instantiate_object(scenery_def, location)
+            scenery_list.append(scenery_obj)
+        return scenery_list
+
+    def compute_objects(self, wall_material_name: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[List[Dict[str, float]]]]:
+        objs = self._get_ramp_and_objects(wall_material_name)
+        scenery = self._compute_scenery()
+        return [], objs + scenery, []
+
+    def _create_random_ramp(self) -> Tuple[ramps.Ramp, bool, List[Dict[str, Any]]]:
+        material_name = random.choice(materials.OCCLUDER_MATERIALS)[0]
+        x_position_percent = random_real(0, 1)
+        left_to_right = random.choice((True, False))
+        ramp_type, ramp_objs = ramps.create_ramp(material_name, x_position_percent, left_to_right)
+        return ramp_type, left_to_right, ramp_objs
+
+    def _get_ramp_and_objects(self, wall_material_name):
+        ramp_type, left_to_right, ramp_objs = self._create_random_ramp()
+        if ramp_type in (ramps.Ramp.RAMP_90, ramps.Ramp.RAMP_30_90, ramps.Ramp.RAMP_45_90):
+            # Don't put objects in places where they'd have to roll up
+            # 90 degree (i.e., vertical) ramps.
+            if left_to_right:
+                valid_positions = { IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
+                                    IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR }
+            else:
+                valid_positions = { IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR,
+                                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR }
+        else:
+            valid_positions = set(IntPhysGoal.Position)
+        positions = []
+        # TODO: later this will get imported from objects (or somewhere else)
+        # only want intphys_options where y == 0
+        valid_defs = []
+        for obj_def in OBJECTS_INTPHYS:
+            new_od = obj_def.copy()
+            valid_intphys = [intphys for intphys in obj_def['intphys_options'] if intphys['y'] == 0]
+            if len(valid_intphys) != 0:
+                new_od['intphys_options'] = valid_intphys
+                valid_defs.append(new_od)
+        self._last_step = IntPhysGoal.LAST_STEP_RAMP
+        # Add a buffer to the ramp's last step to account for extra steps needed by objects moving up the ramps.
+        objs = self._get_objects_moving_across(wall_material_name, self._last_step - IntPhysGoal.LAST_STEP_RAMP_BUFFER,
+                                               0, valid_positions, positions, valid_defs)
+        # adjust height to be on top of ramp if necessary
+        for i in range(len(objs)):
+            obj = objs[i]
+            position = positions[i]
+            if left_to_right and position in (
+                    IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
+                    IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR) or \
+                    not left_to_right and position in (
+                    IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR,
+                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR):
+                obj['shows'][0]['position']['y'] += ramps.RAMP_OBJECT_HEIGHTS[ramp_type]
+                # Add a downward force to all objects moving down the ramps so that they will move more realistically.
+                obj['forces'][0]['vector']['y'] = obj['mass'] * IntPhysGoal.RAMP_DOWNWARD_FORCE
+
+        return ramp_objs + objs
 
 
 class ObjectPermanenceGoal(IntPhysGoal):
@@ -1096,9 +1241,6 @@ class SpatioTemporalContinuityGoal(IntPhysGoal):
     def __init__(self):
         super(SpatioTemporalContinuityGoal, self).__init__()
 
-    def _get_last_step(self):
-        return 60
-
     def _get_num_occluders(self):
         return random.choices((2, 3, 4), (40, 30, 30))[0]
 
@@ -1108,15 +1250,15 @@ class SpatioTemporalContinuityGoal(IntPhysGoal):
     def _get_num_objects_moving_across(self):
         return random.choices((2, 3), (60, 40))[0]
 
+
 # Note: the names of all goal classes in GOAL_TYPES must end in "Goal" or choose_goal will not work
 GOAL_TYPES = {
     'interaction': [RetrievalGoal, TransferralGoal, TraversalGoal],
-# uncomment intphys goals when they have objects
-#    'intphys': [GravityGoal, ObjectPermanenceGoal, ShapeConstancyGoal, SpatioTemporalContinuityGoal]
+    'intphys': [GravityGoal, ObjectPermanenceGoal, ShapeConstancyGoal, SpatioTemporalContinuityGoal]
 }
 
 
-def choose_goal(goal_type):
+def choose_goal(goal_type: str) -> Goal:
     """Return a random class of 'goal' object from within the specified
 overall type, or EmptyGoal if goal_type is None"""
     if goal_type is None:
@@ -1126,12 +1268,11 @@ overall type, or EmptyGoal if goal_type is None"""
             return random.choice(GOAL_TYPES[goal_type])()
         else:
             class_name = goal_type + 'Goal'
-            print(globals().keys())
             klass = globals()[class_name]
             return klass()
 
 
-def get_goal_types():
+def get_goal_types() -> List[str]:
     generic_types = GOAL_TYPES.keys()
     specific_types = [ klass.__name__.replace('Goal','') for classes in GOAL_TYPES.values() for klass in classes]
     return list(generic_types) + specific_types

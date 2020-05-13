@@ -8,6 +8,7 @@ import os.path
 import json
 import copy
 import random
+from typing import Dict, Any, List
 
 from materials import *
 from pretty_json.pretty_json import PrettyJsonEncoder, PrettyJsonNoIndent
@@ -39,16 +40,30 @@ OUTPUT_TEMPLATE_JSON = """
 
 OUTPUT_TEMPLATE = json.loads(OUTPUT_TEMPLATE_JSON)
 
-# the following mins and maxes are inclusive
+
+def strip_debug_info(body):
+    """Remove info that's only for our internal use (e.g., for debugging)"""
+    for obj in body['objects']:
+        clean_object(obj)
+    for goal_key in ('domain_list', 'type_list', 'task_list', 'info_list'):
+        body['goal'].pop(goal_key, None)
+    if 'metadata' in body['goal']:
+        metadata = body['goal']['metadata']
+        for target_key in ('target', 'target_1', 'target_2'):
+            if target_key in metadata:
+                metadata[target_key].pop('info', None)
 
 
-def load_object_file(object_file_name):
-    with open(object_file_name) as object_file:
-        objects = json.load(object_file)
-    return objects
+def clean_object(obj):
+    """Remove properties we do not want TA1s to have access to."""
+    obj.pop('info', None)
+    obj.pop('dimensions', None)
+    obj.pop('intphys_option', None)
+    if 'shows' in obj:
+        obj['shows'][0].pop('bounding_box', None)
 
 
-def generate_file(name, goal_type, find_path):
+def generate_scene(name, goal_type, find_path):
     global OUTPUT_TEMPLATE
     body = copy.deepcopy(OUTPUT_TEMPLATE)
     body['name'] = os.path.basename(name)
@@ -59,31 +74,51 @@ def generate_file(name, goal_type, find_path):
 
     goal_obj = goals.choose_goal(goal_type)
     goal_obj.update_body(body, find_path)
+    return body
+
+
+def generate_file(name, goal_type, find_path):
+    """Create a new scenery file and a debug file. name must end with '.json'."""
+    body = generate_scene(name, goal_type, find_path)
+    write_file(name, body)
+
+
+def write_file(name, body):
+    
+    debug_name = name[:-5] + '-debug.json'
+    write_scene(debug_name, body)
+    strip_debug_info(body)
+    write_scene(name, body)
+    
+
+def write_scene(name, scene):
+    # Use PrettyJsonNoIndent on some of the lists and dicts in the output body because the indentation from the normal
+    # Python JSON module spaces them out far too much.
+    body = copy.deepcopy(scene)
 
     # Use PrettyJsonNoIndent on some of the lists and dicts in the output body because the indentation from the normal
     # Python JSON module spaces them out far too much.
-    if 'goal' in body:
-        wrap_with_json_no_indent(body['goal'], ['domain_list', 'type_list', 'task_list', 'info_list'])
-        if 'metadata' in body['goal']:
-            for target in ['target', 'target_1', 'target_2']:
-                if target in body['goal']['metadata']:
-                    wrap_with_json_no_indent(body['goal']['metadata'][target], ['info', 'image'])
+    wrap_with_json_no_indent(body['goal'], ['action_list', 'domain_list', 'type_list', 'task_list', 'info_list'])
+    if 'metadata' in body['goal']:
+        for target in ['target', 'target_1', 'target_2']:
+            if target in body['goal']['metadata']:
+                wrap_with_json_no_indent(body['goal']['metadata'][target], ['info', 'image'])
 
-    if 'objects' in body:
-        for object_config in body['objects']:
-            wrap_with_json_no_indent(object_config, ['info', 'materials', 'salientMaterials'])
+    for object_config in body['objects']:
+        wrap_with_json_no_indent(object_config, ['info', 'materials', 'salientMaterials'])
 
     with open(name, 'w') as out:
         # PrettyJsonEncoder doesn't work with json.dump so use json.dumps here instead.
         out.write(json.dumps(body, cls=PrettyJsonEncoder, indent=2))
 
 
-def wrap_with_json_no_indent(data, prop_list):
+def wrap_with_json_no_indent(data: Dict[str, Any], prop_list: List[str]):
     for prop in prop_list:
         if prop in data:
             data[prop] = PrettyJsonNoIndent(data[prop])
 
-def generate_fileset(prefix, count, goal_type, find_path, stop_on_error):
+
+def generate_fileset(prefix: str, count: int, goal_type: str, find_path: bool, stop_on_error: bool) -> None:
     # skip existing files
     index = 1
     dirname = os.path.dirname(prefix)
@@ -100,7 +135,7 @@ def generate_fileset(prefix, count, goal_type, find_path, stop_on_error):
         try:
             generate_file(name, goal_type, find_path)
             count -= 1
-        except (RuntimeError, ZeroDivisionError, TypeError) as e:
+        except (RuntimeError, ZeroDivisionError, TypeError, goals.GoalException, ValueError) as e:
             if stop_on_error:
                 raise
             logging.warning(f'failed to create a file: {e}')
