@@ -10,6 +10,7 @@
   - [Show Config](#show-config)
   - [Size Config](#size-config)
   - [Step Config](#step-config)
+  - [Teleport Config](#teleport-config)
   - [Transform Config](#transform-config)
   - [Vector Config](#vector-config)
 - [Object List](#object-list)
@@ -36,6 +37,7 @@ Example:
             "z": -1
         },
         "rotation": {
+            "x": 0,
             "y": 90
         }
     },
@@ -81,7 +83,7 @@ Each **scene config** has the following properties:
 - `ceilingMaterial` (string, optional): The material (color/texture) for the room's ceiling. See the [Material List](#material-list) for options. Default (v0.0.3+): `"AI2-THOR/Materials/Walls/Drywall"`
 - `floorMaterial` (string, optional): The material (color/texture) for the room's floor. See the [Material List](#material-list) for options. Default (v0.0.3+): `"AI2-THOR/Materials/Fabrics/CarpetWhite 3"`
 - `wallMaterial` (string, optional): The material (color/texture) for the room's four outer walls. See the [Material List](#material-list) for options. Default (v0.0.3+): `"AI2-THOR/Materials/Walls/DrywallBeige"`
-- `performerStart` ([transform config](#transform-config), optional): The starting position and rotation of the performer (the "player").  Only the `position.x`, `position.z`, and `rotation.y` properties are used. Default: `{ "position": { "x": 0, "z": 0 }, "rotation": { "y": 0 } }`
+- `performerStart` ([transform config](#transform-config), optional): The starting position and rotation of the performer (the "player"). Only the `position.x`, `position.z`, `rotation.x` (head tilt), and `rotation.y` properties are used. Default: `{ "position": { "x": 0, "z": 0 }, "rotation": { "y": 0 } }`
 - `objects` ([object config](#object-config) array, optional): The objects for the scene. Default: `[]`
 - `goal` ([goal config](#goal-config), optional): The goal for the scene. Default: none
 - `answer` ([answer config](#answer-config), optional): The best answer to the goal for the scene. Default: none
@@ -110,7 +112,7 @@ Each **object config** has the following properties:
 - `salientMaterials` (string array, optional)
 - `shows` ([show config](#show-config) array, optional): The steps on which to show the object, adding its existence to the scene. Please note that each object begins hidden within the scene, so each object should have at least one element in its `shows` array to be useful. Default: `[]`
 - `structure` (boolean, optional): Whether the object is a structural part of the environment. Usually paired with `kinematic`. Default: `false`
-- `teleports` ([move config](#move-config) array, optional): The steps on which to teleport the object, teleporting it from one position in the scene to another. The config `vector` describes the amount of position to change, added to the object's current position. Useful if you want to have impossible events (spontaneous teleportation). Default: `[]`
+- `teleports` ([teleport config](#teleport-config) array, optional): The steps on which to teleport the object, teleporting it from one position in the scene to another. The config `position` describes the object's end position in global coordinates and is not affected by the object's current position. Useful if you want to have impossible events (spontaneous teleportation). Default: `[]`
 - `torques` ([move config](#move-config) array, optional): The steps on which to apply torque to the object. The config `vector` describes the amount of torque (in Newtons) to apply in each direction using the global coordinate system. Resets all existing torques on the object to 0 before applying the new torque. Default: `[]`
 
 ### Goal Config
@@ -167,6 +169,13 @@ Each **size config** has the following properties:
 Each **step config** has the following properties:
 
 - `stepBegin` (integer, required): The step on which the action should occur.  Must be non-negative.  A value of `0` means the action will occur during scene initialization.
+
+### Teleport Config
+
+Each **teleport config** has the following properties:
+
+- `stepBegin` (integer, required): The step on which the action should begin.  Must be non-negative.  A value of `0` means the action will begin during scene initialization.
+- `position` ([vector config](#vector-config), required): The global coordinates to describe the end position. Default: `{ "x": 0, "y": 0, "z": 0 }`
 
 ### Transform Config
 
