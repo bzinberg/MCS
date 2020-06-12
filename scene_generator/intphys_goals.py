@@ -3,10 +3,11 @@ import logging
 from abc import ABC
 from enum import Enum, auto
 import random
-from typing import Dict, Any, List, Iterable, Tuple
+from typing import Dict, Any, List, Iterable, Tuple, Optional
 
 import geometry
 import materials
+import math
 import objects
 import ramps
 from goal import MIN_RANDOM_INTERVAL, Goal, GoalException
@@ -58,8 +59,8 @@ class IntPhysGoal(Goal, ABC):
     LATEST_ACTION_FALL_DOWN_START_STEP = 20
     LAST_STEP_MOVE_ACROSS = 60
     LAST_STEP_FALL_DOWN = 40
-    LAST_STEP_RAMP = 50
-    LAST_STEP_RAMP_BUFFER = 10
+    LAST_STEP_RAMP = 60
+    LAST_STEP_RAMP_BUFFER = 20
     RAMP_DOWNWARD_FORCE = -350
     DEFAULT_TORQUE = {
         'stepBegin': 0,
@@ -69,6 +70,27 @@ class IntPhysGoal(Goal, ABC):
             'y': 0,
             'z': 0
         }
+    }
+
+    class Position(Enum):
+        RIGHT_FIRST_NEAR = auto()
+        RIGHT_LAST_NEAR = auto()
+        RIGHT_FIRST_FAR = auto()
+        RIGHT_LAST_FAR = auto()
+        LEFT_FIRST_NEAR = auto()
+        LEFT_LAST_NEAR = auto()
+        LEFT_FIRST_FAR = auto()
+        LEFT_LAST_FAR = auto()
+
+    OBJECT_POSITIONS = {
+        Position.RIGHT_FIRST_NEAR: (4.2, OBJECT_NEAR_Z),
+        Position.RIGHT_LAST_NEAR: (5.3, OBJECT_NEAR_Z),
+        Position.RIGHT_FIRST_FAR: (4.8, OBJECT_FAR_Z),
+        Position.RIGHT_LAST_FAR: (5.9, OBJECT_FAR_Z),
+        Position.LEFT_FIRST_NEAR: (-4.2, OBJECT_NEAR_Z),
+        Position.LEFT_LAST_NEAR: (-5.3, OBJECT_NEAR_Z),
+        Position.LEFT_FIRST_FAR: (-4.8, OBJECT_FAR_Z),
+        Position.LEFT_LAST_FAR: (-5.9, OBJECT_FAR_Z)
     }
 
     def __init__(self):
@@ -136,9 +158,11 @@ class IntPhysGoal(Goal, ABC):
     def _get_paired_occluder(self, paired_obj, occluder_list, non_room_wall_materials, pole_materials):
         occluder_fits = False
         for _ in range(IntPhysGoal.MAX_OCCLUDER_TRIES):
-            min_scale = min(max(paired_obj['shows'][0]['scale']['x'],
+            x_diagonal = math.sqrt(2) * paired_obj['shows'][0]['scale']['x']
+            min_scale = min(max(x_diagonal,
                                 IntPhysGoal.MIN_OCCLUDER_SCALE),
                             IntPhysGoal.MAX_OCCLUDER_SCALE)
+            # object could be a cube on its corner, so use the diagonal distance
             x_scale = random_real(min_scale, IntPhysGoal.MAX_OCCLUDER_SCALE, MIN_RANDOM_INTERVAL)
             position_by_step = paired_obj['intphys_option']['position_by_step']
             paired_z = paired_obj['shows'][0]['position']['z']
@@ -232,16 +256,6 @@ class IntPhysGoal(Goal, ABC):
             else:
                 logging.debug(f'could not fit occluder at x={occluder_x}')
 
-    class Position(Enum):
-        RIGHT_FIRST_NEAR = auto()
-        RIGHT_LAST_NEAR = auto()
-        RIGHT_FIRST_FAR = auto()
-        RIGHT_LAST_FAR = auto()
-        LEFT_FIRST_NEAR = auto()
-        LEFT_LAST_NEAR = auto()
-        LEFT_FIRST_FAR = auto()
-        LEFT_LAST_FAR = auto()
-
     def _get_objects_and_occluders_moving_across(self, room_wall_material_name: str) \
         -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Get objects to move across the scene and occluders for them. Returns (objects, occluders) pair."""
@@ -257,24 +271,15 @@ class IntPhysGoal(Goal, ABC):
     def _get_objects_moving_across(self, room_wall_material_name: str, last_action_end_step: int,
                                    earliest_action_start_step: int = EARLIEST_ACTION_START_STEP,
                                    valid_positions: Iterable = frozenset(Position),
-                                   positions = None,
+                                   positions: Optional[List[Position]] = None,
                                    valid_defs: List[Dict[str, Any]] = objects.OBJECTS_INTPHYS) \
-                                   -> List[Dict[str, Any]]:
+            -> List[Dict[str, Any]]:
         """Get objects to move across the scene. Returns objects."""
         num_objects = self._get_num_objects_moving_across()
         # The following x positions start outside the camera viewport
         # and ensure that objects with scale 1 don't collide with each
         # other.
-        object_positions = {
-            IntPhysGoal.Position.RIGHT_FIRST_NEAR: (4.2, IntPhysGoal.OBJECT_NEAR_Z),
-            IntPhysGoal.Position.RIGHT_LAST_NEAR: (5.3, IntPhysGoal.OBJECT_NEAR_Z),
-            IntPhysGoal.Position.RIGHT_FIRST_FAR: (4.8, IntPhysGoal.OBJECT_FAR_Z),
-            IntPhysGoal.Position.RIGHT_LAST_FAR: (5.9, IntPhysGoal.OBJECT_FAR_Z),
-            IntPhysGoal.Position.LEFT_FIRST_NEAR: (-4.2, IntPhysGoal.OBJECT_NEAR_Z),
-            IntPhysGoal.Position.LEFT_LAST_NEAR: (-5.3, IntPhysGoal.OBJECT_NEAR_Z),
-            IntPhysGoal.Position.LEFT_FIRST_FAR: (-4.8, IntPhysGoal.OBJECT_FAR_Z),
-            IntPhysGoal.Position.LEFT_LAST_FAR: (-5.9, IntPhysGoal.OBJECT_FAR_Z)
-        }
+
         exclusions = {
             IntPhysGoal.Position.RIGHT_FIRST_NEAR: (IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR),
             IntPhysGoal.Position.RIGHT_LAST_NEAR: (IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR),
@@ -329,15 +334,18 @@ class IntPhysGoal(Goal, ABC):
 
             object_location = {
                 'position': {
-                    'x': object_positions[location][0],
+                    'x': IntPhysGoal.OBJECT_POSITIONS[location][0],
                     'y': intphys_option['y'] + obj_def['position_y'],
-                    'z': object_positions[location][1]
+                    'z': IntPhysGoal.OBJECT_POSITIONS[location][1]
                 }
             }
             obj = instantiate_object(obj_def, object_location)
+            if 'saved_intphys_options' in obj_def:
+                # needed by GravityQuartet for steep ramps
+                intphys_option['saved_options'] = obj_def['saved_intphys_options']
             location_assignments[location] = obj
             position_by_step = copy.deepcopy(intphys_option['position_by_step'])
-            object_position_x = object_positions[location][0]
+            object_position_x = IntPhysGoal.OBJECT_POSITIONS[location][0]
             # adjust position_by_step and remove outliers
             new_positions = []
             for position in position_by_step:
@@ -351,6 +359,8 @@ class IntPhysGoal(Goal, ABC):
             else:
                 max_x = IntPhysGoal.VIEWPORT_LIMIT_FAR + obj_def['scale']['x'] / 2.0 * IntPhysGoal.VIEWPORT_PERSPECTIVE_FACTOR
             filtered_position_by_step = [position for position in new_positions if (abs(position) <= max_x)]
+            intphys_option['position_by_step'] = filtered_position_by_step
+
             # set shows.stepBegin
             min_step_begin = earliest_action_start_step
             if location in acceleration_ordering and acceleration_ordering[location] in location_assignments:
@@ -368,13 +378,16 @@ class IntPhysGoal(Goal, ABC):
             }]
             if location in (IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR, IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR):
                 obj['forces'][0]['vector']['x'] *= -1
-            intphys_option['position_by_step'] = filtered_position_by_step
+            intphys_option['position_y'] = obj_def['position_y']
             obj['intphys_option'] = intphys_option
             new_objects.append(obj)
             if positions is not None:
                 positions.append(location)
 
         return new_objects
+
+    def _get_num_occluders_falling_down(self, num_objects: int) -> int:
+        return 2 if num_objects == 2 else random.choice((1, 2))
 
     def _get_objects_falling_down(self, room_wall_material_name: str) \
         -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -424,7 +437,7 @@ class IntPhysGoal(Goal, ABC):
             }
             object_list.append(obj)
         # place required occluders, then (maybe) some random ones
-        num_occluders = 2 if num_objects == 2 else random.choice((1, 2))
+        num_occluders = self._get_num_occluders_falling_down(num_objects)
         logging.debug(f'num_objects = {num_objects}\tnum_occluders = {num_occluders}')
         occluders = []
         non_room_wall_materials = [m for m in materials.CEILING_AND_WALL_MATERIALS
@@ -455,6 +468,10 @@ class IntPhysGoal(Goal, ABC):
             occluder_pair = objects.create_occluder(random.choice(non_room_wall_materials)[0],
                                                     random.choice(materials.METAL_MATERIALS)[0],
                                                     adjusted_x, x_scale, True)
+            # occluded_id needed by SpatioTemporalContinuityQuartet
+            if 'intphys_option' not in occluder_pair[0]:
+                occluder_pair[0]['intphys_option'] = {}
+            occluder_pair[0]['intphys_option']['occluded_id'] = paired_obj['id']
             occluders.extend(occluder_pair)
         self._add_occluders(occluders, num_occluders - num_objects, non_room_wall_materials, True)
 
@@ -473,8 +490,32 @@ class GravityGoal(IntPhysGoal):
         }
     }
 
-    def __init__(self):
+    def __init__(self, ramp_type: Optional[ramps.Ramp] = None, roll_down: Optional[bool] = None, use_fastest: bool = False):
+        """Caller can specify ramp type and whether the objects roll down or
+        up the ramp, if desired. If not specified, a random choice
+        will be made. In the case of steep ramps (i.e., with 90 degree
+        angles), roll_down is ignored.
+        """
         super(GravityGoal, self).__init__()
+        self._ramp_type: Optional[ramps.Ramp] = ramp_type
+        self._roll_down = roll_down
+        self._left_to_right: Optional[bool] = None
+        self._use_fastest = use_fastest
+
+    def is_ramp_steep(self) -> bool:
+        if self._ramp_type is None:
+            raise ValueError('cannot get ramp type before compute_objects is called')
+        return self._ramp_type in (ramps.Ramp.RAMP_90, ramps.Ramp.RAMP_30_90, ramps.Ramp.RAMP_45_90)
+
+    def get_ramp_type(self) -> ramps.Ramp:
+        if self._ramp_type is None:
+            raise ValueError('cannot get ramp type before compute_objects is called')
+        return self._ramp_type
+
+    def is_left_to_right(self) -> bool:
+        if self._left_to_right is None:
+            raise ValueError('cannot get left-to-right-ness before compute_objects is called')
+        return self._left_to_right
 
     def get_config(self, goal_objects: List[Dict[str, Any]],
                    all_objects: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -524,39 +565,58 @@ class GravityGoal(IntPhysGoal):
 
     def compute_objects(self, room_wall_material_name: str) \
         -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[List[Dict[str, float]]]]:
-        objs = self._get_ramp_and_objects(room_wall_material_name)
+        ramp_type, left_to_right, ramp_objs, objs = self._get_ramp_and_objects(room_wall_material_name)
+        self._ramp_type = ramp_type
+        self._left_to_right = left_to_right
         scenery = self._compute_scenery()
-        return objs, objs + scenery, []
+        goal_objs = objs + ramp_objs
+        return goal_objs, goal_objs + scenery, []
 
-    def _create_random_ramp(self) -> Tuple[ramps.Ramp, bool, List[Dict[str, Any]]]:
+    def _create_random_ramp(self) -> Tuple[ramps.Ramp, bool, float, List[Dict[str, Any]]]:
         material_name = random.choice(materials.OCCLUDER_MATERIALS)[0]
-        x_position_percent = random_real(0, 1)
+        x_position_percent = random.random()
         left_to_right = random.choice((True, False))
-        ramp_type, ramp_objs = ramps.create_ramp(material_name, x_position_percent, left_to_right)
-        return ramp_type, left_to_right, ramp_objs
+        ramp_type, x_term, ramp_objs = ramps.create_ramp(material_name, x_position_percent, left_to_right, self._ramp_type)
+        self._ramp_type = ramp_type
+        return ramp_type, left_to_right, x_term, ramp_objs
 
-    def _get_ramp_and_objects(self, room_wall_material_name: str) -> List[Dict[str, Any]]:
-        ramp_type, left_to_right, ramp_objs = self._create_random_ramp()
-        if ramp_type in (ramps.Ramp.RAMP_90, ramps.Ramp.RAMP_30_90, ramps.Ramp.RAMP_45_90):
-            # Don't put objects in places where they'd have to roll up
-            # 90 degree (i.e., vertical) ramps.
-            if left_to_right:
-                valid_positions = { IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
-                                    IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR }
-            else:
-                valid_positions = { IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR,
-                                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR }
-        else:
-            valid_positions = set(IntPhysGoal.Position)
-        positions = []
+    def _get_ramp_and_objects(self, room_wall_material_name: str) -> \
+        Tuple[ramps.Ramp, bool, List[Dict[str, Any]], List[Dict[str, Any]]]:
+        ramp_type, left_to_right, x_term, ramp_objs = self._create_random_ramp()
         # only want intphys_options where y == 0
         valid_defs = []
         for obj_def in objects.OBJECTS_INTPHYS:
             new_od = obj_def.copy()
             valid_intphys = [intphys for intphys in obj_def['intphys_options'] if intphys['y'] == 0]
             if len(valid_intphys) != 0:
+                new_od['saved_intphys_options'] = copy.deepcopy(valid_intphys)
+                if self.is_ramp_steep() and self._use_fastest:
+                    # use the intphys with the highest force.x for each object
+                    sorted_intphys = sorted(valid_intphys, key=lambda intphys: intphys['force']['x'])
+                    valid_intphys = [sorted_intphys[-1]]
                 new_od['intphys_options'] = valid_intphys
                 valid_defs.append(new_od)
+        if self.is_ramp_steep():
+            # Don't put objects in places where they'd have to roll up
+            # 90 degree (i.e., vertical) ramps.
+            if left_to_right:
+                valid_positions = { IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR,
+                                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR }
+            else:
+                valid_positions = { IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
+                                    IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR }
+        elif self._roll_down is not None:
+            # enforce rolling up or down the ramp as specified
+            if self._roll_down and left_to_right or not self._roll_down and not left_to_right:
+                valid_positions = { IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR,
+                                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR }
+            else:
+                valid_positions = { IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
+                                    IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR }
+        else:
+            valid_positions = set(IntPhysGoal.Position)
+        positions = []
+
         self._last_step = IntPhysGoal.LAST_STEP_RAMP
         # Add a buffer to the ramp's last step to account for extra steps needed by objects moving up the ramps.
         objs = self._get_objects_moving_across(room_wall_material_name, self._last_step - IntPhysGoal.LAST_STEP_RAMP_BUFFER,
@@ -564,18 +624,21 @@ class GravityGoal(IntPhysGoal):
         # adjust height to be on top of ramp if necessary
         for i in range(len(objs)):
             obj = objs[i]
+            obj['intphys_option']['moving_object'] = True
+            obj['intphys_option']['ramp_x_term'] = x_term
             position = positions[i]
+            # Add a downward force to all objects moving down the
+            # ramps so that they will move more realistically.
             if left_to_right and position in (
-                    IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
-                    IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR) or \
-                    not left_to_right and position in (
                     IntPhysGoal.Position.LEFT_FIRST_NEAR, IntPhysGoal.Position.LEFT_LAST_NEAR,
-                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR):
+                    IntPhysGoal.Position.LEFT_FIRST_FAR, IntPhysGoal.Position.LEFT_LAST_FAR) or \
+                    not left_to_right and position in (
+                        IntPhysGoal.Position.RIGHT_FIRST_NEAR, IntPhysGoal.Position.RIGHT_LAST_NEAR,
+                        IntPhysGoal.Position.RIGHT_FIRST_FAR, IntPhysGoal.Position.RIGHT_LAST_FAR):
                 obj['shows'][0]['position']['y'] += ramps.RAMP_OBJECT_HEIGHTS[ramp_type]
-                # Add a downward force to all objects moving down the ramps so that they will move more realistically.
                 obj['forces'][0]['vector']['y'] = obj['mass'] * IntPhysGoal.RAMP_DOWNWARD_FORCE
 
-        return ramp_objs + objs
+        return ramp_type, left_to_right, ramp_objs, objs
 
 
 class ObjectPermanenceGoal(IntPhysGoal):
@@ -642,3 +705,6 @@ class SpatioTemporalContinuityGoal(IntPhysGoal):
         self._add_occluders(occluder_list, num_occluders - 2, non_room_wall_materials, False)
 
         return occluder_list
+
+    def _get_num_occluders_falling_down(self, num_objects: int) -> int:
+        return 2

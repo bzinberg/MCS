@@ -8,8 +8,10 @@ import os.path
 import json
 import copy
 import random
-from typing import Dict, Any, List
+from enum import Enum, auto
+from typing import Dict, Any, List, Tuple
 
+import pairs
 import quartets
 from materials import *
 from pretty_json.pretty_json import PrettyJsonEncoder, PrettyJsonNoIndent
@@ -63,6 +65,7 @@ def clean_object(obj: Dict[str, Any]) -> None:
     obj.pop('dimensions', None)
     obj.pop('intphys_option', None)
     obj.pop('materials_list', None)
+    obj.pop('materialCategory', None)
     obj.pop('original_location', None)
     if 'shows' in obj:
         obj['shows'][0].pop('bounding_box', None)
@@ -97,7 +100,7 @@ def write_file(name: str, body: Dict[str, Any]) -> None:
     write_scene(debug_name, body)
     strip_debug_info(body)
     write_scene(name, body)
-    
+
 
 def write_scene(name: str, scene: Dict[str, Any]) -> None:
     # Use PrettyJsonNoIndent on some of the lists and dicts in the
@@ -119,7 +122,10 @@ def write_scene(name: str, scene: Dict[str, Any]) -> None:
 
     with open(name, 'w') as out:
         # PrettyJsonEncoder doesn't work with json.dump so use json.dumps here instead.
-        out.write(json.dumps(body, cls=PrettyJsonEncoder, indent=2))
+        try:
+            out.write(json.dumps(body, cls=PrettyJsonEncoder, indent=2))
+        except Exception as e:
+            logging.error(body, e)
 
 
 def wrap_with_json_no_indent(data: Dict[str, Any], prop_list: List[str]) -> None:
@@ -161,7 +167,8 @@ def generate_quartet(prefix: str, index: int, quartet_name: str,
             try:
                 scene = quartet.get_scene(q)
                 scene['name'] = name
-                write_scene(name, scene)
+                scene_copy = copy.deepcopy(scene)
+                write_file(name, scene_copy)
                 break
             except (RuntimeError, ZeroDivisionError, TypeError, goal.GoalException, ValueError) as e:
                 if stop_on_error:
@@ -184,15 +191,66 @@ def generate_quartets(prefix: str, count: int, quartet_name: str,
         count -= 1
 
 
+def write_scene_of_pair(scenes: Tuple[Dict[str, Any], Dict[str, Any]],
+                        name_stem: str, index: int) -> None:
+    name = f'{name_stem}{index}.json'
+    scene = scenes[index - 1]
+    scene['name'] = name
+    scene_copy = copy.deepcopy(scene)
+    write_file(name, scene_copy)
+
+
+def generate_pair(prefix: str, count: int,
+                  find_path: bool, stop_on_error: bool) -> None:
+    template = generate_body_template('')
+    name_stem = f'{prefix}-{count:04}-'
+    pair_class = pairs.get_pair_class()
+    pair = pair_class(template, find_path)
+    logging.debug(f'generating scene pair #{count}')
+    while True:
+        try:
+            scenes = pair.get_scenes()
+            write_scene_of_pair(scenes, name_stem, 1)
+            write_scene_of_pair(scenes, name_stem, 2)
+            break
+        except (RuntimeError, ZeroDivisionError, TypeError, goal.GoalException, ValueError) as e:
+            if stop_on_error:
+                raise
+            logging.warning(f'failed to create a pair: {e}')
+    logging.debug(f'end generation of scene pair #{count}')
+
+
+def generate_pair_fileset(prefix: str, count: int,
+                          find_path: bool, stop_on_error: bool) -> None:
+    index = 1
+    while count > 0:
+        while True:
+            name = f'{prefix}-{index:04}-1.json'
+            file_exists = os.path.exists(name)
+            if not file_exists:
+                break
+            index += 1
+        generate_pair(prefix, index, find_path, stop_on_error)
+        count -= 1
+
+
+class FilesetType(Enum):
+    SINGLE = auto()
+    QUARTET = auto()
+    PAIR = auto()
+
+
 def generate_fileset(prefix: str, count: int, type_name: str, find_path: bool, stop_on_error: bool,
-                     gen_quartet: bool) -> None:
+                     fileset_type: FilesetType) -> None:
     dirname = os.path.dirname(prefix)
     if dirname != '':
         os.makedirs(dirname, exist_ok=True)
 
-    if gen_quartet:
+    if fileset_type == FilesetType.QUARTET:
         generate_quartets(prefix, count, type_name, find_path, stop_on_error)
-    else:
+    elif fileset_type == FilesetType.PAIR:
+        generate_pair_fileset(prefix, count, find_path, stop_on_error)
+    elif fileset_type == FilesetType.SINGLE:
         generate_scene_fileset(prefix, count, type_name, find_path, stop_on_error)
 
 
@@ -208,6 +266,8 @@ def main(argv):
     group.add_argument('--quartet', default=None, choices=quartets.get_quartet_types(),
                        help='Generate a scene quartet for a goal of the specified type [default is to generate individual scenes]. Lowercase '
                        'goals are categories; capitalized goals are specific goals.')
+    group.add_argument('--pair', default=False, action='store_true',
+                       help='Generate a scene pair for interaction tasks.')
     parser.add_argument('--find_path', default=False, action='store_true',
                         help='Whether to run the pathfinding for interaction goals')
     parser.add_argument('--stop-on-error', default=False, action='store_true',
@@ -223,15 +283,18 @@ def main(argv):
 
     if args.goal is not None:
         type_name = args.goal
-        is_quartet = False
+        fileset_type = FilesetType.SINGLE
     elif args.quartet is not None:
         type_name = args.quartet
-        is_quartet = True
+        fileset_type = FilesetType.QUARTET
+    elif args.pair:
+        type_name = None
+        fileset_type = FilesetType.PAIR
     else:
         type_name = None
-        is_quartet = False
-        
-    generate_fileset(args.prefix, args.count, type_name, args.find_path, args.stop_on_error, is_quartet)
+        fileset_type = FilesetType.SINGLE
+
+    generate_fileset(args.prefix, args.count, type_name, args.find_path, args.stop_on_error, fileset_type)
 
 
 if __name__ == '__main__':
